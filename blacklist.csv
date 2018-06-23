@@ -1,0 +1,17 @@
+# blacklist.csv
+# list of individual AWS components to bypass when deleting/terminating
+# CSV file; format:
+#<REGION1>,<ID1>
+#<REGION2>,<ID2>
+#<REGION3>,<ID3>
+#<REGIONn>,<IDn>
+#
+#  WHERE:
+#    <REGIONn>: region name (ex: "us-west-2", "us-east-1",...) or wild-card "*".
+#    <IDn> is the unique identifier (Instance ID for EC2 instances, Group ID for Security Groups,
+#          Key Name for Key Pairs,...)
+#Ex:
+#us-west-2,sg-9z16696m6d198245
+#*,EC2Keys
+####################################################
+*,EC2KeyPair
