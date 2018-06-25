@@ -16,7 +16,6 @@ import os.path
 from collections import deque
 from botocore.exceptions import ClientError
 delPattern="sec545";
-delScopeHeader = ["Delete Scope", 11]
 #  blacklist.csv file expected to be found in the same directory as the aws_cleanup.py script.
 blackListFile=os.path.join(sys.path[0], 'blacklist.csv')
 #blackListFile='blacklist.csv'
@@ -28,6 +27,12 @@ blackListFile=os.path.join(sys.path[0], 'blacklist.csv')
 #            <region>: region name (ex: "us-west-2", "us-east-1",...) or wild-card "*".
 #blackList={"sg-0b1325235sst435235":"us-west-2","i-0d2d0e7q42342352525":"*","MyEC2":"*"}
 blackList={}
+
+def displayTagFlag(parTagExists):
+  if parTagExists:
+    return "Yes"
+  else:
+    return ""
 
 class scriptArgs:
   def __init__(self, parChoice):
@@ -114,7 +119,7 @@ class tagScan:
     self.nameTagInscope = False
     self.nameAltInscope = False
     self.onBlackList = False
-    self.delScope = ""
+    self.delScope = None
     self.delThisItem = False
     for t in tagList:
       if t['Key'] == 'Name':
@@ -127,18 +132,20 @@ class tagScan:
       if re.search(delPattern, nameAlt, re.IGNORECASE):
         self.nameAltInscope = True
       
-    if chkBlackListId in blackList and (blackList[chkBlackListId] == "*" or blackList[chkBlackListId] == currentRegion):
-      self.onBlackList = True
-      self.delScope="blacklist"
-    elif self.patternTag or self.nameTagInscope or self.nameAltInscope:
-      self.delScope="all & ID"
-    else:
-      self.delScope="all"
+    if scriptArg.inv:
+      if chkBlackListId in blackList and (blackList[chkBlackListId] == "*" or blackList[chkBlackListId] == chkBlackListRegion):
+        self.onBlackList = True
+        self.delScope="blacklist"
+      elif self.patternTag or self.nameTagInscope or self.nameAltInscope:
+        self.delScope="all & ID"
+      else:
+        self.delScope="all"
     #  As the logic behind determining what should and shouldn't be deleted is common for AWS components,
     #  centralized the login here.
     if not self.onBlackList and (scriptArg.del_all or (scriptArg.del_id and (self.patternTag or self.nameTagInscope or self.nameAltInscope))):
       self.delThisItem = True
 
+delScopeHeader = None
 parser = argparse.ArgumentParser(allow_abbrev=False,usage="aws_cleanup.py -[h][--del_id | --del_all]")
 parser.add_argument('--del_id', help='drop AWS components identified with "' + delPattern + '"', action="store_true", default=False)
 parser.add_argument('--del_all', help='drop ALL AWS components.', action="store_true", default=False)
@@ -151,11 +158,13 @@ elif args.del_all:
   aws_cleanupArg = scriptArgs('del_all')
 else:
   aws_cleanupArg = scriptArgs('inv')
+  delScopeHeader = ["Delete Scope", 11]
+
 
 termList={}
 # Load in all current regions from AWS
 regions = [region['RegionName'] for region in boto3.client('ec2').describe_regions()['Regions']]
-# regions=['us-west-2','us-east-1','us-east-2']  #for testing#
+#regions=['us-west-2','us-east-1','us-east-2']  #for testing#
 
 #  Read in file containing component's blacklisted from dropping:
 if os.path.exists(blackListFile):
@@ -195,14 +204,14 @@ for currentRegion in regions:
   #################################################################
   #  EC2 Instances
   #################################################################
-  ec2Rpt = awsRpt(*[["Instance ID", 25],["Name(Tag)", 40],[delPattern+"(Tag)","","^"],["Image ID", 30],["Status", 20],[None,delScopeHeader][aws_cleanupArg.inv]])
+  ec2Rpt = awsRpt(*[["Instance ID", 25],["Name(Tag)", 40],[delPattern+"(Tag)","","^"],["Image ID", 30],["Status", 20],delScopeHeader])
   client = boto3.client('ec2',region_name=currentRegion)
   response = client.describe_instances()
   for resp in response['Reservations']:
     for inst in resp['Instances']:
       tagData = tagScan(inst['Tags'] if 'Tags' in inst else [], inst['InstanceId'], currentRegion, aws_cleanupArg)
       if aws_cleanupArg.inv:
-        ec2Rpt.addLine(inst['InstanceId'],tagData.nameTag,'{}'.format("Yes" if tagData.patternTag else ""),inst['ImageId'],inst['State']['Name'],'{}'.format("N/A" if inst['State']['Name'] == 'terminated' else tagData.delScope))
+        ec2Rpt.addLine(inst['InstanceId'],tagData.nameTag,displayTagFlag(tagData.patternTag),inst['ImageId'],inst['State']['Name'],'{}'.format("N/A" if inst['State']['Name'] == 'terminated' else tagData.delScope))
       elif inst['State']['Name'] != 'terminated' and tagData.delThisItem:
         ec2Rpt.addLine(inst['InstanceId'],tagData.nameTag,'{}'.format("Yes" if tagData.patternTag else ""),inst['ImageId'],inst['State']['Name'])
         #  Setup nested dictionary
@@ -218,13 +227,13 @@ for currentRegion in regions:
   #################################################################
   #  Security Group
   #################################################################
-  secGroupRpt = awsRpt(*[["Group ID", 25],["Name(Tag)", 30],[delPattern+"(Tag)","","^"],["Group Name", 30],["Description", 45],[None,delScopeHeader][aws_cleanupArg.inv]])
+  secGroupRpt = awsRpt(*[["Group ID", 25],["Name(Tag)", 30],[delPattern+"(Tag)","","^"],["Group Name", 30],["Description", 45],delScopeHeader])
   response = client.describe_security_groups()
   for resp in response['SecurityGroups']:
     # ... can't do anything with the default security group
     if resp['GroupName'] != 'default':
       tagData = tagScan(resp['Tags'] if 'Tags' in resp else [], resp['GroupId'], currentRegion, aws_cleanupArg, resp['GroupName'])
-      secGroupRptCommonLine = (resp['GroupId'],tagData.nameTag,'{}'.format("Yes" if tagData.patternTag else ""),resp['GroupName'],resp['Description'],[None,tagData.delScope][aws_cleanupArg.inv])
+      secGroupRptCommonLine = (resp['GroupId'],tagData.nameTag,displayTagFlag(tagData.patternTag),resp['GroupName'],resp['Description'],tagData.delScope)
       if aws_cleanupArg.inv:
         secGroupRpt.addLine(*secGroupRptCommonLine)
       elif tagData.delThisItem:
@@ -241,11 +250,11 @@ for currentRegion in regions:
   #################################################################
   #  Volumes
   #################################################################
-  volRpt = awsRpt(*[["Volume ID", 25],["Name(Tag)", 30],[delPattern+"(Tag)","","^"],["Vol Type", 10],["State", 15],[None,delScopeHeader][aws_cleanupArg.inv]])
+  volRpt = awsRpt(*[["Volume ID", 25],["Name(Tag)", 30],[delPattern+"(Tag)","","^"],["Vol Type", 10],["State", 15],delScopeHeader])
   volumes = client.describe_volumes()
   for vol in volumes['Volumes']:
     tagData = tagScan(vol['Tags'] if 'Tags' in vol else [], vol['VolumeId'], currentRegion, aws_cleanupArg)
-    volRptCommonLine = (vol['VolumeId'],tagData.nameTag,'{}'.format("Yes" if tagData.patternTag else ""),vol['VolumeType'],vol['State'],[None,tagData.delScope][aws_cleanupArg.inv])
+    volRptCommonLine = (vol['VolumeId'],tagData.nameTag,displayTagFlag(tagData.patternTag),vol['VolumeType'],vol['State'],tagData.delScope)
     if aws_cleanupArg.inv:
       volRpt.addLine(*volRptCommonLine)
     elif tagData.delThisItem:
@@ -262,7 +271,7 @@ for currentRegion in regions:
   #################################################################
   #  Key Pairs
   #################################################################
-  secKeyPairsRpt = awsRpt(*[["KeyName", 30],[None,delScopeHeader][aws_cleanupArg.inv]])
+  secKeyPairsRpt = awsRpt(*[["KeyName", 30],delScopeHeader])
   response = client.describe_key_pairs()
   for resp in response['KeyPairs']:
     tagData = tagScan([], resp['KeyName'], currentRegion, aws_cleanupArg, resp['KeyName'])
@@ -279,6 +288,27 @@ for currentRegion in regions:
     output += '\nKey Pairs for region ' + currentRegion + ':\n'
     output += secKeyPairsRpt.result() + "\n"
 
+#################################################################
+#  S3 Buckets
+#################################################################
+clientS3 = boto3.client('s3')
+s3Rpt = awsRpt(*[["Bucket Name", 40],[delPattern+"(Tag)","","^"],delScopeHeader])
+for buckets in clientS3.list_buckets()['Buckets']:
+  try:
+    bucketTag = clientS3.get_bucket_tagging(Bucket=buckets['Name'])['TagSet']
+  except ClientError as e:
+    bucketTag=[]
+  ####>>> Need to review blacklist region for S3 case (plus others)
+  tagData = tagScan(bucketTag, buckets['Name'], None, aws_cleanupArg, buckets['Name'])
+  if aws_cleanupArg.inv:
+    s3Rpt.addLine(buckets['Name'], displayTagFlag(tagData.patternTag), tagData.delScope)
+  #print(buckets['Name'], bucketsTag)
+if s3Rpt.rows > 0:
+  output += "\nS3 Bucket List (Inventory; no termination yet -wfw):\n"
+  output += s3Rpt.result()
+
+
+
 print(output)
 print("\n")
 if not aws_cleanupArg.inv and termList:
@@ -286,6 +316,9 @@ if not aws_cleanupArg.inv and termList:
   if not blackList:
     print('NOTE: no blacklist file utilized (if you want to block some of the above components from being removed.)')
   verifyTermProceed = input('Type "yes" to terminate/drop above AWS components: ')
+  #################################################################
+  #  EC2 Instances terminate
+  #################################################################
   if verifyTermProceed == "yes":
     if 'EC2' in termList:
       for currentRegion,idDict in termList['EC2'].items():
@@ -320,6 +353,10 @@ if not aws_cleanupArg.inv and termList:
             instance = ec2.Instance(id);
             print('Waiting for ' + currentRegion + ' EC2 instance ' + idDetail['DISPLAY_ID'] + ' to terminate...');
             instance.wait_until_terminated()
+
+    #################################################################
+    #  Security Groups delete
+    #################################################################
     if 'SECGROUP' in termList:
       #  Delete Security Groups
       for currentRegion,idDict in termList['SECGROUP'].items():
