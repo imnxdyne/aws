@@ -195,7 +195,7 @@ keepTagHeader = [aws_cleanupArg.keepTag+"(Tag)","","^"]
 termList=defaultdict(lambda : defaultdict(dict))
 # Load in all current regions from AWS
 regions = [region['RegionName'] for region in boto3.client('ec2').describe_regions()['Regions']]
-regions=['us-west-2','us-east-1','us-east-2']  #for testing#
+#regions=['us-west-2','us-east-1','us-east-2']  #for testing#
 
 
 #  targetTag is the regex pattern used to identify what needs to be listed in the inventory
@@ -298,7 +298,7 @@ if volRpt.rows > 0:
   output += '\nVolumes{}:\n'.format(targetTagTitleInfo)
   output += volRpt.result() + "\n"
 if secKeyPairsRpt.rows > 0:
-  output += '\nKey Pairs{}:\n'.format(targetTagTitleInfo)
+  output += '\nKey Pairs:\n'
   output += secKeyPairsRpt.result() + "\n"
 elif aws_cleanupArg.del_tag:
   output += '\nKey Pairs: not included for tag delete, as key pairs don''t have tags\n'
@@ -325,7 +325,7 @@ for buckets in clientS3.list_buckets()['Buckets']:
     else:
       termList['S3'].append(buckets['Name'])
 if s3Rpt.rows > 0:
-  output += "\nS3 Buckets:\n"
+  output += '\nS3 Buckets{}:\n'.format(targetTagTitleInfo)
   output += s3Rpt.result()
 
 
