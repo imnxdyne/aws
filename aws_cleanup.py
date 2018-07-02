@@ -2,6 +2,9 @@
 #  aws_cleanup.py 
 #  2018.06.12 - Created - William Waye 
 #  2018.06.24 - wfw - consolidated code via ternary operators & added AWS Volume
+#  2018.06.29 - wfw - improved UI, added S3 bucket, removed blacklist (using "keep" tag instead).
+#  2018.07.01 - wfw - added POC code for warning about EC2 instances with dependency on
+#                     Security Groups targeted for delete.
 import sys
 import re
 try:
@@ -12,70 +15,71 @@ except ImportError as e:
 import argparse
 import io
 import textwrap
-import os.path
 from collections import deque
 from botocore.exceptions import ClientError
-from collections import defaultdict
-delPattern="sec545";
-blackListPattern="keep"
-#  blacklist.csv file expected to be found in the same directory as the aws_cleanup.py script.
-blackListFile=os.path.join(sys.path[0], 'blacklist.csv')
-#blackListFile='blacklist.csv'
-
-# blackList format:
-#  blackList={"<ID1>":"<region>"[, "<ID2>":"<region>"[, "<IDn>":"<region...]]}
-#     WHERE: <IDn> is the unique identifier (Instance ID for EC2 instances, Group ID for Security Groups, 
-#                 Key Name for Key Pairs,...)
-#            <region>: region name (ex: "us-west-2", "us-east-1",...) or wild-card "*".
-#blackList={"sg-0b1325235sst435235":"us-west-2","i-0d2d0e7q42342352525":"*","MyEC2":"*"}
-blackList={}
-
-def displayTagFlag(parTagExists):
-  if parTagExists:
-    return "Yes"
-  else:
-    return ""
+from collections import defaultdict    # used for initializing nested dictionaries
 
 def formatDispName(*parNames):
   retName = ''
   for parName in parNames:
     if parName:
       if not retName:
-        retName = ' ("' + parName + '"'
+        retName = ' ("{}"'.format(parName)
       else:
-        retName += ', "' + parName + '"'
+        retName += ', "{}'.format(parName)
   if retName:
     retName += ')'
   return retName
 
+
+# Using prefix on the region name to highlight when the region changes.
+class regionBreakClass:
+  def __init__(self):
+    self.breakDisp = ">> "
+    self.postDisp = " " * len(self.breakDisp)
+
+  def disp(self, regionName):
+    returnVal = self.breakDisp + regionName
+    self.breakDisp = self.postDisp
+    return returnVal
+  
+  
 class scriptArgs:
-  def __init__(self, parChoice):
-    self.del_id = self.del_all = self.inv = False
-    if parChoice == "inv":
+  def __init__(self, choice, targetTag = None, keepTag = "keep"):
+    self.del_tag = self.del_all = self.inv = False
+    if choice == "inv":
       self.inv = True
-    elif parChoice == "del_all":
+    elif choice == "del_all":
       self.del_all = True
-    elif parChoice == "del_id":
-      self.del_id = True
+    elif choice == "del_tag":
+      self.del_tag = True
     else:
       raise ValueError('scriptArgs', 'Invalid value passed to scriptArgs')
-    
+    self.targetTag = targetTag
+    if self.targetTag:
+      #  Cleanup any empty strings in target tag list
+      tagEx = re.compile('^\s*$')
+      self.targetTag = [tag for tag in self.targetTag if not tagEx.match(tag)]
+    self.keepTag = keepTag
+
 class awsRpt:
   def __init__(self, *header):
     self.outputRpt = ""
     self.headerList = list(header)
-    #  The last array element might be None (due to how the delete scope works). If so, just pop it.
-    if self.headerList[-1] == None:
-      ign = self.headerList.pop()
     self.lines = "+"
     self.header = "|"
     self.rows=0
+    #  Remove column headers with the value of "None".
+    while None in self.headerList:
+      self.headerList.remove(None)
     for col in self.headerList:
       if len(col) == 1:
         col.append(len(col[0]))
       if not col[1]:
+        #  Default the column width to the size of the column heading
         col[1] = len(col[0])
       if len(col) == 2:
+        #  Assume left justification
         col.append("<")
       if type(col[0]) != type(str()) or type(col[1]) != type(int()):
         print(col[0], col[1])
@@ -89,9 +93,11 @@ class awsRpt:
 
   def addLine(self, *rptRow):
     rptRowList = list(rptRow)
-    #  The last array element might be None (due to how the delete scope works). If so, just pop it.
-    if rptRowList[-1] == None:
-      ign = rptRowList.pop()
+    #  Do a quick check to make sure that the number of row columns matches the number of 
+    #  header columns. Need to loop through as some column values can be None, which
+    #  is a skipped column.
+    while None in rptRowList:
+      rptRowList.remove(None)
     if (len(rptRowList) != len(self.headerList)):
        print ("ERROR - invalid column list for awsRpt.addLine()")
        print ("        The number of elements in the awsRpt.addLine column list (" + str(len(rptRowList))  + ") has to match")
@@ -125,291 +131,333 @@ class awsRpt:
     return self.lines + "\n" +  self.header + "\n" + self.lines + "\n" + self.outputRpt + "\n" + self.lines
 
 class tagScan:
-  #  tagScan contains tagScan's object's derived attributes (at least as much as could be
+  #  tagScan contains AWS item object's derived attributes (at least as much as could be
   #  derived).
-  def __init__(self, tagList, chkBlackListId, chkBlackListRegion, scriptArg, nameAlt = ""):
+  def __init__(self, tagList, scriptArg):
     self.nameTag = ""
-    self.patternTag = False
-    self.blackListTag = False
-    self.nameTagInscope = False
-    self.nameAltInscope = False
-    self.onBlackList = False
-    self.delScope = None
     self.delThisItem = False
+    if scriptArg.targetTag is None:
+      self.targetTagFound = None
+    else:
+      self.targetTagFound = ""
+    self.keepTagFound = ""
     for t in tagList:
       if t['Key'] == 'Name':
         self.nameTag = t['Value']
-        if re.search(delPattern, t['Value'],re.IGNORECASE):
-          self.nameTagInscope = True
-      elif re.search('^'+delPattern+'$', t['Key'], re.IGNORECASE):
-        self.patternTag = True
-      elif blackListPattern and re.search('^'+blackListPattern+'$', t['Key'], re.IGNORECASE):
-        self.blackListTag = True
-    if nameAlt:
-      if re.search(delPattern, nameAlt, re.IGNORECASE):
-        self.nameAltInscope = True
-      
-    if self.blackListTag or (chkBlackListId in blackList and (blackList[chkBlackListId] == "*" or blackList[chkBlackListId] == chkBlackListRegion)):
-      self.onBlackList = True
-    #  If inventory option is chosen, set the delScope attribute.
-    if scriptArg.inv:
-      if self.onBlackList:
-        self.delScope="blacklist"
-      elif self.patternTag or self.nameTagInscope or self.nameAltInscope:
-        self.delScope="all & id"
-      else:
-        self.delScope="all"
-    #  As the logic behind determining what should and shouldn't be deleted is common for AWS components,
-    #  centralized the login here.
-    elif not self.onBlackList and (scriptArg.del_all or (scriptArg.del_id and (self.patternTag or self.nameTagInscope or self.nameAltInscope))):
-      self.delThisItem = True
-
-delScopeHeader = None
-parser = argparse.ArgumentParser(allow_abbrev=False,usage="aws_cleanup.py -[h][--del_id | --del_all]")
-parser.add_argument('--del_id', help='drop AWS components identified with "' + delPattern + '"', action="store_true", default=False)
-parser.add_argument('--del_all', help='drop ALL AWS components.', action="store_true", default=False)
+      elif scriptArg.keepTag and re.search('^'+re.escape(scriptArg.keepTag)+'$', t['Key'], re.IGNORECASE):
+        self.keepTagFound = "Yes"
+      elif scriptArg.targetTag is not None:
+        for searchTag in scriptArg.targetTag:
+          if re.search('^'+re.escape(searchTag)+'$', t['Key'], re.IGNORECASE):
+            if self.targetTagFound:
+              self.targetTagFound += ", " + searchTag
+            else:
+              self.targetTagFound = searchTag
+    if not self.keepTagFound:
+      if scriptArg.del_all:
+        self.delThisItem = True
+      elif scriptArg.del_tag and self.targetTagFound:
+        self.delThisItem = True
+        
+argUsage = "usage: aws_cleanup.py -[h][--del][--tag <tag_key1> [<tag_key2> [tag_key# ..]]]"
+parser = argparse.ArgumentParser(allow_abbrev=False,usage=argUsage)
+#  As "del" is a reserved word in Python, needed to have an alnternate destination.
+parser.add_argument('-d', '--del', dest='delete', help='delete/terminate AWS components', action="store_true", default=False)
+parser.add_argument('-t', '--tag', nargs='+', help='search for components with a specific key value')
 args = parser.parse_args()
-if args.del_id and args.del_all:
-  raise argparse.ArgumentTypeError('cannot have arguments "--del_id" and "--del_all" at the same time')
-if args.del_id:
-  aws_cleanupArg = scriptArgs('del_id')
-elif args.del_all:
-  aws_cleanupArg = scriptArgs('del_all')
+if args.delete:
+  if args.tag:
+    aws_cleanupArg = scriptArgs(choice='del_tag', targetTag=args.tag)
+  else:
+    aws_cleanupArg = scriptArgs(choice='del_all')
 else:
-  aws_cleanupArg = scriptArgs('inv')
-  delScopeHeader = ["Delete Scope", 11]
+  aws_cleanupArg = scriptArgs(choice='inv', targetTag=args.tag)
+#exit()
+if aws_cleanupArg.targetTag is not None and len(aws_cleanupArg.targetTag) == 0:
+  print(argUsage)
+  print("aws_cleanup.py: error: argument --tag: expected at least one argument")
+  exit(5)
 
+# Make sure the "keep" tag isn't in the targetTag list.
+if aws_cleanupArg.targetTag is not None and aws_cleanupArg.keepTag in aws_cleanupArg.targetTag:
+  print('\nERROR: --tag cannot include the value "{0}".\nThe tag key "{0}" is used to identify which  AWS items can\'t be terminated or deleted'.format(aws_cleanupArg.keepTag))
+  exit(6)
+if aws_cleanupArg.targetTag:
+  targetTagHeader = ["Search Tag",18,"<"]
+  targetTagTitleInfo = ' (search tag "{}")'.format('", "'.join(aws_cleanupArg.targetTag))
+else:
+  targetTagHeader = None
+  targetTagTitleInfo = ''
 
+keepTagHeader = [aws_cleanupArg.keepTag+"(Tag)","","^"]
+
+# Initialize the list of things to terminate
 termList=defaultdict(lambda : defaultdict(dict))
 # Load in all current regions from AWS
 regions = [region['RegionName'] for region in boto3.client('ec2').describe_regions()['Regions']]
-#regions=['us-west-2','us-east-1','us-east-2']  #for testing#
+regions=['us-west-2','us-east-1','us-east-2']  #for testing#
 
-#  Read in file containing component's blacklisted from dropping:
-if os.path.exists(blackListFile):
-  errBlackList = False
-  print("Reading in AWS components contained in file " + blackListFile)
-  with open(blackListFile, 'r') as fileBl:
-    for rowBl in fileBl:
-      rowBl = re.sub('\n$', '', rowBl)
-      if not re.search('^\s*#', rowBl) and not re.search('^\s*$', rowBl):
-        colBl = rowBl.split(",",maxsplit=1)
-        if len(colBl) == 1:
-          print('  Invalid line format in blacklist.csv, row "' + rowBl + '"')
-          errBlackList = True
-        else:
-          if colBl[0] == "*" or colBl[0] in regions:
-            blackList[colBl[1]] = colBl[0]
-          else:
-            print('  Invalid region in blacklist.csv, row "' + rowBl + '"')
-            errBlackList = True
-  if errBlackList:
-    sys.exit("ERROR: format issue with blacklist file " + blackListFile + ", terminating script.")
-else:
-  print("Blacklist file " + blackListFile + " not found.")
 
-#  delPattern is the regex pattern used to identify what needs to be listed in the inventory
-#  and possibly terminated. delPattern is used in searching the AWS component
+#  targetTag is the regex pattern used to identify what needs to be listed in the inventory
+#  and possibly terminated. targetTag is used in searching the AWS component
 #  tag (complete value) OR as a substring in the component's name
 print("\n")
-if aws_cleanupArg.del_all or aws_cleanupArg.inv:
-  print('Inventory of ALL AWS components\n')
-else:
-  print ('Inventory of AWS components either tagged as "' + delPattern + '" or the name contains "' + delPattern + '":\n')
+print('Inventory of ALL AWS components\n')
 output=""
-for currentRegion in regions:
-  print ('Inventorying region ' + currentRegion + '...') 
+securityGroupDepend=defaultdict(lambda : defaultdict(dict))
+keepEC2=defaultdict(lambda : defaultdict(dict))
+for currentRegion in sorted(regions):
+  print ('Inventorying region {}...'.format(currentRegion))
 
   #################################################################
   #  EC2 Instances
   #################################################################
-  ec2Rpt = awsRpt(*[["Instance ID", 25],["Name(Tag)", 40],[delPattern+"(Tag)","","^"],["Image ID", 30],["Status", 20],delScopeHeader])
+  if 'ec2Rpt' not in globals():
+    ec2Rpt = awsRpt(*[["Region", 19],["Instance ID", 25],["Name(Tag)", 30],keepTagHeader, targetTagHeader,["Image ID", 30],["Status", 13]])
   client = boto3.client('ec2',region_name=currentRegion)
+  regionBreak = regionBreakClass()
   response = client.describe_instances()
   for resp in response['Reservations']:
     for inst in resp['Instances']:
-      tagData = tagScan(inst['Tags'] if 'Tags' in inst else [], inst['InstanceId'], currentRegion, aws_cleanupArg)
+      tagData = tagScan(inst['Tags'] if 'Tags' in inst else [], aws_cleanupArg)
       if aws_cleanupArg.inv:
-        ec2Rpt.addLine(inst['InstanceId'],tagData.nameTag,displayTagFlag(tagData.patternTag),inst['ImageId'],inst['State']['Name'],'{}'.format("N/A" if inst['State']['Name'] == 'terminated' else tagData.delScope))
-      elif inst['State']['Name'] != 'terminated' and tagData.delThisItem:
-        ec2Rpt.addLine(inst['InstanceId'],tagData.nameTag,'{}'.format("Yes" if tagData.patternTag else ""),inst['ImageId'],inst['State']['Name'])
-        termList['EC2'][currentRegion][inst['InstanceId']] = {'DISPLAY_ID': inst['InstanceId'] + formatDispName(tagData.nameTag),'TERMINATED':False}
-  if ec2Rpt.rows > 0:
-    output += '\nEC2 Instances for region ' + currentRegion + ':\n'
-    output += ec2Rpt.result() + "\n"
+        ec2Rpt.addLine(regionBreak.disp(currentRegion), inst['InstanceId'],tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound,inst['ImageId'],inst['State']['Name'])
+      elif inst['State']['Name'] != 'terminated':
+        if tagData.delThisItem:
+          ec2Rpt.addLine(regionBreak.disp(currentRegion), inst['InstanceId'],tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound,inst['ImageId'],inst['State']['Name'])
+          termList['EC2'][currentRegion][inst['InstanceId']] = {'DISPLAY_ID': inst['InstanceId'] + formatDispName(tagData.nameTag),'TERMINATED':False}
+        elif aws_cleanupArg.del_tag:
+          for secGroup in inst['SecurityGroups']:
+            if secGroup['GroupId'] not in keepEC2[currentRegion]:
+              keepEC2[currentRegion][secGroup['GroupId']]= {'DEPENDENCY':False,'LIST':[]}
+            keepEC2[currentRegion][secGroup['GroupId']]['LIST'].append(inst['InstanceId'])
 
   #################################################################
   #  Security Group
   #################################################################
-  secGroupRpt = awsRpt(*[["Group ID", 25],["Name(Tag)", 30],[delPattern+"(Tag)","","^"],["Group Name", 30],["Description", 45],delScopeHeader])
+  if 'secGroupRpt' not in globals():
+    secGroupRpt = awsRpt(*[["Region", 19],["Group ID", 25],["Name(Tag)", 30],keepTagHeader,targetTagHeader,["Group Name", 30],["Description", 35]])
+  regionBreak = regionBreakClass()
   response = client.describe_security_groups()
   for resp in response['SecurityGroups']:
     # ... can't do anything with the default security group
     if resp['GroupName'] != 'default':
-      tagData = tagScan(resp['Tags'] if 'Tags' in resp else [], resp['GroupId'], currentRegion, aws_cleanupArg, resp['GroupName'])
-      secGroupRptCommonLine = (resp['GroupId'],tagData.nameTag,displayTagFlag(tagData.patternTag),resp['GroupName'],resp['Description'],tagData.delScope)
+      tagData = tagScan(resp['Tags'] if 'Tags' in resp else [], aws_cleanupArg)
+      secGroupRptCommonLine = (regionBreak.disp(currentRegion), resp['GroupId'],tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound,resp['GroupName'],resp['Description'])
       if aws_cleanupArg.inv:
         secGroupRpt.addLine(*secGroupRptCommonLine)
       elif tagData.delThisItem:
         secGroupRpt.addLine(*secGroupRptCommonLine)
-        termList['SECGROUP'][currentRegion][resp['GroupId']] = {'DISPLAY_ID': resp['GroupId'] + formatDispName(resp['GroupName'], tagData.nameTag)}
-  if secGroupRpt.rows > 0:
-    output += '\nSecurity Groups for region ' + currentRegion + ':\n'
-    output += secGroupRpt.result() + "\n"
+        termList['SECGROUP'][currentRegion][resp['GroupId']] = {'DISPLAY_ID': resp['GroupId'] + formatDispName(tagData.nameTag, resp['GroupName'], resp['Description'])}
+        if aws_cleanupArg.del_tag and resp['GroupId'] in keepEC2[currentRegion]:
+          keepEC2[currentRegion][resp['GroupId']]['DEPENDENCY'] = True
+          
 
   #################################################################
   #  Volumes
   #################################################################
-  volRpt = awsRpt(*[["Volume ID", 25],["Name(Tag)", 30],[delPattern+"(Tag)","","^"],["Vol Type", 10],["State", 15],delScopeHeader])
+  if 'volRpt' not in globals():
+    volRpt = awsRpt(*[["Region", 19],["Volume ID", 25],["Name(Tag)", 30],keepTagHeader,targetTagHeader,["Vol Type", 10],["State", 15]])
+  regionBreak = regionBreakClass()
   volumes = client.describe_volumes()
   for vol in volumes['Volumes']:
-    tagData = tagScan(vol['Tags'] if 'Tags' in vol else [], vol['VolumeId'], currentRegion, aws_cleanupArg)
-    volRptCommonLine = (vol['VolumeId'],tagData.nameTag,displayTagFlag(tagData.patternTag),vol['VolumeType'],vol['State'],tagData.delScope)
+    tagData = tagScan(vol['Tags'] if 'Tags' in vol else [], aws_cleanupArg)
+    volRptCommonLine = (regionBreak.disp(currentRegion), vol['VolumeId'],tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound,vol['VolumeType'],vol['State'])
     if aws_cleanupArg.inv:
       volRpt.addLine(*volRptCommonLine)
     elif tagData.delThisItem:
       volRpt.addLine(*volRptCommonLine)
       termList['VOLUME'][currentRegion][vol['VolumeId']] = {'DISPLAY_ID': vol['VolumeId'] + formatDispName(tagData.nameTag)}
-  if volRpt.rows > 0:
-    output += '\nVolumes for region ' + currentRegion + ':\n'
-    output += volRpt.result() + "\n"
 
   #################################################################
   #  Key Pairs
   #################################################################
-  secKeyPairsRpt = awsRpt(*[["KeyName", 30],delScopeHeader])
-  response = client.describe_key_pairs()
-  for resp in response['KeyPairs']:
-    tagData = tagScan([], resp['KeyName'], currentRegion, aws_cleanupArg, resp['KeyName'])
-    if aws_cleanupArg.inv:
-      secKeyPairsRpt.addLine(resp['KeyName'],tagData.delScope)
-    elif tagData.delThisItem:
-      secKeyPairsRpt.addLine(resp['KeyName'])
-      if not termList['KeyPairs'][currentRegion]:
-        termList['KeyPairs'][currentRegion] = [resp['KeyName']]
+  if 'secKeyPairsRpt' not in globals():
+    secKeyPairsRpt = awsRpt(*[["Region", 19],["KeyName", 30]])
+  # Skipping key pairs if deleting by tags (as they have no tags)
+  if not aws_cleanupArg.del_tag:
+    regionBreak = regionBreakClass()
+    response = client.describe_key_pairs()
+    for resp in response['KeyPairs']:
+      if aws_cleanupArg.inv:
+        secKeyPairsRpt.addLine(regionBreak.disp(currentRegion), resp['KeyName'])
       else:
-        termList['KeyPairs'][currentRegion].append(resp['KeyName'])
-  if secKeyPairsRpt.rows > 0:
-    output += '\nKey Pairs for region ' + currentRegion + ':\n'
-    output += secKeyPairsRpt.result() + "\n"
+        secKeyPairsRpt.addLine(regionBreak.disp(currentRegion), resp['KeyName'])
+        if not termList['KeyPairs'][currentRegion]:
+          termList['KeyPairs'][currentRegion] = [resp['KeyName']]
+        else:
+          termList['KeyPairs'][currentRegion].append(resp['KeyName'])
+
+if ec2Rpt.rows > 0:
+  output += '\nEC2 Instances{}:\n'.format(targetTagTitleInfo)
+  output += ec2Rpt.result() + "\n"
+if secGroupRpt.rows > 0:
+  output += '\nSecurity Groups{}:\n'.format(targetTagTitleInfo)
+  output += secGroupRpt.result() + "\n"
+if volRpt.rows > 0:
+  output += '\nVolumes{}:\n'.format(targetTagTitleInfo)
+  output += volRpt.result() + "\n"
+if secKeyPairsRpt.rows > 0:
+  output += '\nKey Pairs{}:\n'.format(targetTagTitleInfo)
+  output += secKeyPairsRpt.result() + "\n"
+elif aws_cleanupArg.del_tag:
+  output += '\nKey Pairs: not included for tag delete, as key pairs don''t have tags\n'
+
 
 #################################################################
 #  S3 Buckets
 #################################################################
 clientS3 = boto3.client('s3')
-s3Rpt = awsRpt(*[["Bucket Name", 40],[delPattern+"(Tag)","","^"],delScopeHeader])
+s3Rpt = awsRpt(*[["Bucket Name", 40],keepTagHeader,targetTagHeader])
 for buckets in clientS3.list_buckets()['Buckets']:
   try:
     bucketTag = clientS3.get_bucket_tagging(Bucket=buckets['Name'])['TagSet']
   except ClientError as e:
     bucketTag=[]
-  tagData = tagScan(bucketTag, buckets['Name'], None, aws_cleanupArg, buckets['Name'])
+  tagData = tagScan(bucketTag, aws_cleanupArg)
   if aws_cleanupArg.inv:
-    s3Rpt.addLine(buckets['Name'], displayTagFlag(tagData.patternTag), tagData.delScope)
+    s3Rpt.addLine(buckets['Name'], tagData.keepTagFound, tagData.targetTagFound)
   elif tagData.delThisItem:
-    s3Rpt.addLine(buckets['Name'], displayTagFlag(tagData.patternTag))
-    termList['S3'][buckets['Name']] = {'DISPLAY_ID': buckets['Name']}
-    
+    s3Rpt.addLine(buckets['Name'], tagData.keepTagFound, tagData.targetTagFound)
+    if not termList['S3']:
+      # Initialize termList['S3'] bucket list
+      termList['S3'] = [buckets['Name']]
+    else:
+      termList['S3'].append(buckets['Name'])
 if s3Rpt.rows > 0:
-  output += "\nS3 Bucket List (Inventory; script does not drop S3 buckets at this time -wfw):\n"
+  output += "\nS3 Buckets:\n"
   output += s3Rpt.result()
 
 
 
 print(output)
 print("\n")
-if not aws_cleanupArg.inv and termList:
-  #  Verify that they really want to drop everything listed as in-scope.
-  if not blackList:
-    print('NOTE: no blacklist file utilized (if you want to block some of the above components from being removed.)')
-  if aws_cleanupArg.del_all:
-    print("Dropping ALL components")
+if not aws_cleanupArg.inv:
+  if not termList:
+    print("No AWS items were found that were in-scope for terminating/deleting")
+    if aws_cleanupArg.del_tag:
+      print('Search tag: "{}"'.format('", "'.join(aws_cleanupArg.targetTag)))
   else:
-    print('Dropping components either tagged as "' + delPattern + '" or the name contains "' + delPattern + '":')
-  verifyTermProceed = input('Type "yes" to terminate/drop above AWS components: ')
-  #################################################################
-  #  EC2 Instances terminate
-  #################################################################
-  if verifyTermProceed == "yes":
-    if 'EC2' in termList:
-      for currentRegion,idDict in termList['EC2'].items():
-        ec2 = boto3.resource('ec2',region_name=currentRegion)
+    #  Verify that they really want to terminate/delete everything listed as in-scope.
+    if aws_cleanupArg.del_all:
+      print("Terminating/deleting ALL components")
+    else:
+      print('Deleting items with the tag(s): "' + '", "'.join(aws_cleanupArg.targetTag) + '"')
+      keepEC2Output = ""
+      if keepEC2:
+        for keepRegion, keepGroupItems in keepEC2.items():
+          for keepGroupId, keepGroupInfo in keepGroupItems.items():
+            if keepGroupInfo['DEPENDENCY']:
+              keepEC2Output = "  Region:" + keepRegion + ", Security Group: " + keepGroupId + ", Dependant EC2 Instances: " + ", ".join(keepGroupInfo['LIST'])
+      if keepEC2Output:
+        print('WARNING - the following Security Groups identified to delete have EC2 dependant instances NOT being deleted.')
+        print('          If you proceed, there will be a failure message for these Security Groups:')
+        print(keepEC2Output + "\n")  
+    verifyTermProceed = input('Type "yes" to terminate/delete above listed AWS components: ')
+    #################################################################
+    #  EC2 Instances terminate
+    #################################################################
+    if verifyTermProceed == "yes":
+      if 'EC2' in termList:
+        for currentRegion,idDict in termList['EC2'].items():
+          ec2 = boto3.resource('ec2',region_name=currentRegion)
 
-        for id, idDetail in idDict.items():
-          print('Terminating ' + currentRegion + ' EC2 instance ' + idDetail['DISPLAY_ID'])
-          ec2DryRunSuccessful=False
-          #  Not sure if there's an advantage to having the DryRun test;
-          #  will leave this segment of code in place for future.
-          try:
-            response = ec2.Instance(id).terminate(DryRun=True)
-            #  Should never reach this point, but just in case...
-            ec2DryRunSuccess = True
-          except ClientError as e:
-            if e.response["Error"]["Code"] == "DryRunOperation":
-              ec2DryRunSuccess = True
-            else:
-              print(e, '\n')
-              ec2DryRunSuccess = False
-          if ec2DryRunSuccess:
+          for id, idDetail in idDict.items():
+            print('Terminating ' + currentRegion + ' EC2 instance ' + idDetail['DISPLAY_ID'])
+            ec2DryRunSuccessful=False
+            #  Not sure if there's an advantage to having the DryRun test;
+            #  will leave this segment of code in place for future.
             try:
-              response = ec2.Instance(id).terminate( DryRun=False)
-              idDetail['TERMINATED'] = True
+              response = ec2.Instance(id).terminate(DryRun=True)
+              #  Should never reach this point, but just in case...
+              ec2DryRunSuccess = True
+            except ClientError as e:
+              if e.response["Error"]["Code"] == "DryRunOperation":
+                ec2DryRunSuccess = True
+              else:
+                print(e, '\n')
+                ec2DryRunSuccess = False
+            if ec2DryRunSuccess:
+              try:
+                response = ec2.Instance(id).terminate( DryRun=False)
+                idDetail['TERMINATED'] = True
+              except ClientError as e:
+                print("   ", e, '\n')
+        #  Loop through terminated instances and wait for the termination to 
+        #  complete before continuing.
+        for currentRegion,idDict in termList['EC2'].items():
+          ec2 = boto3.resource('ec2',region_name=currentRegion)
+          for id, idDetail in idDict.items():
+            if idDetail['TERMINATED']:
+              instance = ec2.Instance(id);
+              print('Waiting for ' + currentRegion + ' EC2 instance ' + idDetail['DISPLAY_ID'] + ' to terminate...');
+              instance.wait_until_terminated()
+
+      #################################################################
+      #  Security Groups delete
+      #################################################################
+      if 'SECGROUP' in termList:
+        #  Delete Security Groups
+        for currentRegion,idDict in termList['SECGROUP'].items():
+          ec2 = boto3.resource('ec2',region_name=currentRegion)
+          for id, idDetail in idDict.items():
+            print('Deleting ' + currentRegion + ' Security Group ' + idDetail['DISPLAY_ID'])
+            try:
+              response = ec2.SecurityGroup(id).delete(DryRun=False)
             except ClientError as e:
               print("   ", e, '\n')
-      #  Loop through the terminated instances and wait for the termination to complete.
-      for currentRegion,idDict in termList['EC2'].items():
-        ec2 = boto3.resource('ec2',region_name=currentRegion)
-        for id, idDetail in idDict.items():
-          if idDetail['TERMINATED']:
-            instance = ec2.Instance(id);
-            print('Waiting for ' + currentRegion + ' EC2 instance ' + idDetail['DISPLAY_ID'] + ' to terminate...');
-            instance.wait_until_terminated()
+ 
+      #################################################################
+      #  Volumes delete
+      #################################################################
+      if 'VOLUME' in termList:
+        #  Delete Security Groups
+        print("NOTE: Volumes may already been deleted with assoicated EC2 instances.")
+        for currentRegion,idDict in termList['VOLUME'].items():
+          ec2 = boto3.resource('ec2',region_name=currentRegion)
+          for id, idDetail in idDict.items():
+            print('Deleting ' + currentRegion + ' Volume ' + idDetail['DISPLAY_ID'])
+            try:
+              response = ec2.Volume(id).delete(DryRun=False)
+            except ClientError as e:
+              if e.response["Error"]["Code"] == 'InvalidVolume.NotFound':
+                print("    Volume already deleted")
+              else:
+                print("   ", e, '\n')
 
-    #################################################################
-    #  Security Groups delete
-    #################################################################
-    if 'SECGROUP' in termList:
-      #  Delete Security Groups
-      for currentRegion,idDict in termList['SECGROUP'].items():
-        ec2 = boto3.resource('ec2',region_name=currentRegion)
-        for id, idDetail in idDict.items():
-          print('Deleting ' + currentRegion + ' Security Group ' + idDetail['DISPLAY_ID'])
-          try:
-            response = ec2.SecurityGroup(id).delete(DryRun=False)
-          except ClientError as e:
-            print("   ", e, '\n')
 
-    #################################################################
-    #  Volumes delete
-    #################################################################
-    if 'VOLUME' in termList:
-      #  Delete Security Groups
-      print("NOTE: Volumes may already have been deleted with assoicated EC2 instances.")
-      for currentRegion,idDict in termList['VOLUME'].items():
-        ec2 = boto3.resource('ec2',region_name=currentRegion)
-        for id, idDetail in idDict.items():
-          print('Deleting ' + currentRegion + ' Volume ' + idDetail['DISPLAY_ID'])
-          try:
-            response = ec2.Volume(id).delete(DryRun=False)
-          except ClientError as e:
-            if e.response["Error"]["Code"] == 'InvalidVolume.NotFound':
-              print("    Volume already dropped")
-            else:
+      #################################################################
+      #  Key Pairs delete
+      #################################################################
+      if 'KeyPairs' in termList:
+        for currentRegion,idDict in termList['KeyPairs'].items():
+          ec2 = boto3.resource('ec2',region_name=currentRegion)
+          for colData in idDict:
+            print('Deleting Key Pair "' + colData + '"')
+            try:
+              response = ec2.KeyPair(colData).delete(DryRun=False)
+            except ClientError as e:
               print("   ", e, '\n')
+ 
 
-
-    #################################################################
-    #  Key Pairs delete
-    #################################################################
-    if 'KeyPairs' in termList:
-      for currentRegion,idDict in termList['KeyPairs'].items():
-        ec2 = boto3.resource('ec2',region_name=currentRegion)
-        for colData in idDict:
-          print('Dropping Key Pair "' + colData + '"')
+      #################################################################
+      #  S3 buckets delete
+      #################################################################
+      if 'S3' in termList:
+        s3 = boto3.resource('s3')
+        for bucketName in termList['S3']:
+          #  Before a bucket can be deleted, the objects in the bucket first have to be
+          #  deleted.
+          print('Deleting any objects contained in S3 Bucket ' + bucketName + '...')
           try:
-            response = ec2.KeyPair(colData).delete(DryRun=False)
+            ign = s3.Bucket(bucketName).objects.delete()
           except ClientError as e:
             print("   ", e, '\n')
-
-  else:
-    print('Exiting script WITHOUT terminating/dropping AWS components')
+          print('Deleting S3 Bucket ' + bucketName)
+          try:
+            ign = s3.Bucket(bucketName).delete()
+          except ClientError as e:
+            print("   ", e, '\n')
+        
+    else:
+      print('Exiting script WITHOUT terminating/deleting AWS components')
