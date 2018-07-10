@@ -9,6 +9,7 @@
 import sys
 import os
 import re
+import random
 try:
   import boto3
 except ImportError as e:
@@ -375,12 +376,17 @@ if not aws_cleanupArg.inv:
       if keepEC2Output:
         print('WARNING - the following Security Groups identified to delete have EC2 dependant instances NOT being deleted.')
         print('          If you proceed, there will be a failure message for these Security Groups:')
-        print(keepEC2Output + "\n")  
-    verifyTermProceed = input('Type "yes" to terminate/delete above listed AWS components: ')
+        print(keepEC2Output + "\n") 
+    #  Having the user type in something more that just "yes" to confirm they really
+    #  want to terminate/delete AWS item(s).
+    verifyDelCode = str(random.randint(0, 9999)).zfill(4)
+    print("\nWARNING: ALL AWS COMPONENTS LISTED ABOVE WILL BE TERMINATED/DELETED")
+    print("Verification Code ---> {}".format(verifyDelCode))
+    verifyTermProceed = input('Enter above 4-digit Verification Code to proceed (ctrl-c to exit): ')
     #################################################################
     #  EC2 Instances terminate
     #################################################################
-    if verifyTermProceed == "yes":
+    if verifyTermProceed == verifyDelCode:
       if 'EC2' in termList:
         for currentRegion,idDict in termList['EC2'].items():
           ec2 = boto3.resource('ec2',region_name=currentRegion)
@@ -483,4 +489,4 @@ if not aws_cleanupArg.inv:
             print("   ", e, '\n')
         
     else:
-      print('Exiting script WITHOUT terminating/deleting AWS components')
+      print('Invalid Verification Code entered. Exiting script WITHOUT terminating/deleting AWS components')
