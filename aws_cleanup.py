@@ -5,18 +5,21 @@
 #  2018.06.29 - wfw - improved UI, added S3 bucket, removed blacklist (using "keep" tag instead).
 #  2018.07.01 - wfw - added POC code for warning about EC2 instances with dependency on
 #                     Security Groups targeted for delete.
+#  2018.07.09 - wfw - added a couple traps for handling (potential) common errors for AWS connections.
 import sys
+import os
 import re
 try:
   import boto3
 except ImportError as e:
-  print('This script require Boto3 to be installed and configured.')
+  print('This script requires Boto3 to be installed and configured.')
+  print('Can install via "pip install boto3"')
   exit()
 import argparse
 import io
 import textwrap
 from collections import deque
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError,NoCredentialsError,EndpointConnectionError
 from collections import defaultdict    # used for initializing nested dictionaries
 
 def formatDispName(*parNames):
@@ -191,10 +194,30 @@ else:
 
 keepTagHeader = [aws_cleanupArg.keepTag+"(Tag)","","^"]
 
-# Initialize the list of things to terminate
+# Initialize the dictionary of items to delete/terminate
 termList=defaultdict(lambda : defaultdict(dict))
-# Load in all current regions from AWS
-regions = [region['RegionName'] for region in boto3.client('ec2').describe_regions()['Regions']]
+
+# Load all regions from AWS into region list.
+# As this is where the initial connection occurs to AWS, included a couple traps to handle
+# connectivity errors - network MIA, invalid AWS credentials, missing AWS aws credentials,....
+try:
+  regions = [region['RegionName'] for region in boto3.client('ec2').describe_regions()['Regions']]
+except NoCredentialsError as e:
+  print('ERROR: Cannot connect to AWS - possible credential issue.\nVerify that local AWS credentials in .aws are configured correctly.')
+  exit(10)
+except EndpointConnectionError as e:
+  print('ERROR: Cannot connect to AWS - possible network issue.\nAWS error message: ', e)
+  exit(11)
+except:
+  #  For any other errors...(there may be a real issue with obtaining AWS regions...).
+  print("Unexpected error:", sys.exc_info()[0])
+  #  If .aws directory doesn't exist, the error handling occurs here at the catch-all (strangely 
+  #  enough, not handled in NoCredentialsError). Check to see if the .aws directory even 
+  #  exists. If it isn't there, give a warning.
+  if not os.path.isdir(os.path.expanduser('~/.aws')):
+    print('It looks like the .aws directory for credentials is missing.')
+  print('Make sure the local credentials are setup correctly - instructions can be found at https://aws.amazon.com/developers/getting-started/python')
+  exit(12)
 #regions=['us-west-2','us-east-1','us-east-2']  #for testing#
 
 
