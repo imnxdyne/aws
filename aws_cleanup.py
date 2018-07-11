@@ -6,6 +6,10 @@
 #  2018.07.01 - wfw - added POC code for warning about EC2 instances with dependency on
 #                     Security Groups targeted for delete.
 #  2018.07.09 - wfw - added a couple traps for handling (potential) common errors for AWS connections.
+#  2018.07.10 - wfw - Changed delete verification from entering "yes" to a 4-digit delete
+#     verification code, added termTrackClass (primarily for having variable constants instead of
+#     string constants for dictionary indexes), and added "--test_region" argument (reduced number of regions
+#     during dev testing for improved performance). Changed region break format.
 import sys
 import os
 import re
@@ -35,18 +39,33 @@ def formatDispName(*parNames):
     retName += ')'
   return retName
 
-
-# Using prefix on the region name to highlight when the region changes.
-class regionBreakClass:
+class termTrackClass:
   def __init__(self):
-    self.breakDisp = ">> "
-    self.postDisp = " " * len(self.breakDisp)
+    # Initialize the dictionary of items to delete/terminate
+    self.x=defaultdict(lambda : defaultdict(dict))
+    self.EC2 = 'EC2'
+    self.SecGroup = 'SECGROUP'
+    self.Volume = 'VOLUME'
+    self.KeyPairs = 'KEYPAIR'
+    self.S3 = 'S3';
 
-  def disp(self, regionName):
-    returnVal = self.breakDisp + regionName
-    self.breakDisp = self.postDisp
-    return returnVal
   
+class regionBreakNewClass:
+  def __init__(self):
+    self.newRpt = True
+    self.regionNameTrack = None
+
+  def lineBreak(self, regionName):
+    returnVal = False
+    if self.regionNameTrack is None:
+      self.regionNameTrack = regionName
+    else:
+      if self.regionNameTrack != regionName:
+        returnVal = True
+        self.regionNameTrack = regionName
+    return returnVal
+
+
   
 class scriptArgs:
   def __init__(self, choice, targetTag = None, keepTag = "keep"):
@@ -95,7 +114,7 @@ class awsRpt:
       self.header += '{0:^{fill}}'.format(col[0],fill=col[1]) + "|"
       self.lines += '-' * col[1] + "+"
 
-  def addLine(self, *rptRow):
+  def addLine(self, rptBreak, *rptRow):
     rptRowList = list(rptRow)
     #  Do a quick check to make sure that the number of row columns matches the number of 
     #  header columns. Need to loop through as some column values can be None, which
@@ -112,6 +131,9 @@ class awsRpt:
       formColumn.append(deque(textwrap.wrap(colData, width=self.headerList[colNo][1], subsequent_indent='   ')))
     anyData = True
     bldLine = "|"
+    if rptBreak:
+      self.outputRpt += "\n" + self.lines
+      self.rows += 1
     while anyData:
       anyData = False
       bldLine = "|"
@@ -168,6 +190,7 @@ parser = argparse.ArgumentParser(allow_abbrev=False,usage=argUsage)
 #  As "del" is a reserved word in Python, needed to have an alnternate destination.
 parser.add_argument('-d', '--del', dest='delete', help='delete/terminate AWS components', action="store_true", default=False)
 parser.add_argument('-t', '--tag', nargs='+', help='search for components with a specific key value')
+parser.add_argument('--test_region', help='reduces number of in-scope regions for code testing for better performance -wfw', action="store_true", default=False)
 args = parser.parse_args()
 if args.delete:
   if args.tag:
@@ -196,7 +219,7 @@ else:
 keepTagHeader = [aws_cleanupArg.keepTag+"(Tag)","","^"]
 
 # Initialize the dictionary of items to delete/terminate
-termList=defaultdict(lambda : defaultdict(dict))
+termTrack = termTrackClass()
 
 # Load all regions from AWS into region list.
 # As this is where the initial connection occurs to AWS, included a couple traps to handle
@@ -219,7 +242,9 @@ except:
     print('It looks like the .aws directory for credentials is missing.')
   print('Make sure the local credentials are setup correctly - instructions can be found at https://aws.amazon.com/developers/getting-started/python')
   exit(12)
-#regions=['us-west-2','us-east-1','us-east-2']  #for testing#
+if args.test_region:
+  regions=['us-west-1','us-west-2','us-east-1','us-east-2']  #for testing#
+  print('Reduced regions for script testing: ', regions, '\n\n')
 
 
 #  targetTag is the regex pattern used to identify what needs to be listed in the inventory
@@ -230,6 +255,12 @@ print('Inventory of ALL AWS components\n')
 output=""
 securityGroupDepend=defaultdict(lambda : defaultdict(dict))
 keepEC2=defaultdict(lambda : defaultdict(dict))
+regionBreakEC2 = regionBreakNewClass()
+regionBreakSecGroup = regionBreakNewClass()
+regionBreakVolume = regionBreakNewClass()
+regionBreakKeyPairs = regionBreakNewClass()
+regionBreakS3 = regionBreakNewClass()
+
 for currentRegion in sorted(regions):
   print ('Inventorying region {}...'.format(currentRegion))
 
@@ -237,19 +268,18 @@ for currentRegion in sorted(regions):
   #  EC2 Instances
   #################################################################
   if 'ec2Rpt' not in globals():
-    ec2Rpt = awsRpt(*[["Region", 19],["Instance ID", 25],["Name(Tag)", 30],keepTagHeader, targetTagHeader,["Image ID", 30],["Status", 13]])
+    ec2Rpt = awsRpt(*[["Region", 16],["Instance ID", 25],["Name(Tag)", 30],keepTagHeader, targetTagHeader,["Image ID", 30],["Status", 13]])
   client = boto3.client('ec2',region_name=currentRegion)
-  regionBreak = regionBreakClass()
   response = client.describe_instances()
   for resp in response['Reservations']:
     for inst in resp['Instances']:
       tagData = tagScan(inst['Tags'] if 'Tags' in inst else [], aws_cleanupArg)
       if aws_cleanupArg.inv:
-        ec2Rpt.addLine(regionBreak.disp(currentRegion), inst['InstanceId'],tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound,inst['ImageId'],inst['State']['Name'])
+        ec2Rpt.addLine(regionBreakEC2.lineBreak(currentRegion), currentRegion, inst['InstanceId'],tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound,inst['ImageId'],inst['State']['Name'])
       elif inst['State']['Name'] != 'terminated':
         if tagData.delThisItem:
-          ec2Rpt.addLine(regionBreak.disp(currentRegion), inst['InstanceId'],tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound,inst['ImageId'],inst['State']['Name'])
-          termList['EC2'][currentRegion][inst['InstanceId']] = {'DISPLAY_ID': inst['InstanceId'] + formatDispName(tagData.nameTag),'TERMINATED':False}
+          ec2Rpt.addLine(regionBreakEC2.lineBreak(currentRegion), currentRegion, inst['InstanceId'],tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound,inst['ImageId'],inst['State']['Name'])
+          termTrack.x[termTrack.EC2][currentRegion][inst['InstanceId']] = {'DISPLAY_ID': inst['InstanceId'] + formatDispName(tagData.nameTag),'TERMINATED':False}
         elif aws_cleanupArg.del_tag:
           for secGroup in inst['SecurityGroups']:
             if secGroup['GroupId'] not in keepEC2[currentRegion]:
@@ -260,19 +290,18 @@ for currentRegion in sorted(regions):
   #  Security Group
   #################################################################
   if 'secGroupRpt' not in globals():
-    secGroupRpt = awsRpt(*[["Region", 19],["Group ID", 25],["Name(Tag)", 30],keepTagHeader,targetTagHeader,["Group Name", 30],["Description", 35]])
-  regionBreak = regionBreakClass()
+    secGroupRpt = awsRpt(*[["Region", 16],["Group ID", 25],["Name(Tag)", 30],keepTagHeader,targetTagHeader,["Group Name", 30],["Description", 35]])
   response = client.describe_security_groups()
   for resp in response['SecurityGroups']:
     # ... can't do anything with the default security group
     if resp['GroupName'] != 'default':
       tagData = tagScan(resp['Tags'] if 'Tags' in resp else [], aws_cleanupArg)
-      secGroupRptCommonLine = (regionBreak.disp(currentRegion), resp['GroupId'],tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound,resp['GroupName'],resp['Description'])
+      secGroupRptCommonLine = (currentRegion, resp['GroupId'],tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound,resp['GroupName'],resp['Description'])
       if aws_cleanupArg.inv:
-        secGroupRpt.addLine(*secGroupRptCommonLine)
+        secGroupRpt.addLine(regionBreakSecGroup.lineBreak(currentRegion), *secGroupRptCommonLine)
       elif tagData.delThisItem:
-        secGroupRpt.addLine(*secGroupRptCommonLine)
-        termList['SECGROUP'][currentRegion][resp['GroupId']] = {'DISPLAY_ID': resp['GroupId'] + formatDispName(tagData.nameTag, resp['GroupName'], resp['Description'])}
+        secGroupRpt.addLine(regionBreakSecGroup.lineBreak(currentRegion), *secGroupRptCommonLine)
+        termTrack.x[termTrack.SecGroup][currentRegion][resp['GroupId']] = {'DISPLAY_ID': resp['GroupId'] + formatDispName(tagData.nameTag, resp['GroupName'], resp['Description'])}
         if aws_cleanupArg.del_tag and resp['GroupId'] in keepEC2[currentRegion]:
           keepEC2[currentRegion][resp['GroupId']]['DEPENDENCY'] = True
           
@@ -281,49 +310,47 @@ for currentRegion in sorted(regions):
   #  Volumes
   #################################################################
   if 'volRpt' not in globals():
-    volRpt = awsRpt(*[["Region", 19],["Volume ID", 25],["Name(Tag)", 30],keepTagHeader,targetTagHeader,["Vol Type", 10],["State", 15]])
-  regionBreak = regionBreakClass()
+    volRpt = awsRpt(*[["Region", 16],["Volume ID", 25],["Name(Tag)", 30],keepTagHeader,targetTagHeader,["Vol Type", 10],["State", 15]])
   volumes = client.describe_volumes()
   for vol in volumes['Volumes']:
     tagData = tagScan(vol['Tags'] if 'Tags' in vol else [], aws_cleanupArg)
-    volRptCommonLine = (regionBreak.disp(currentRegion), vol['VolumeId'],tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound,vol['VolumeType'],vol['State'])
+    volRptCommonLine = (currentRegion, vol['VolumeId'],tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound,vol['VolumeType'],vol['State'])
     if aws_cleanupArg.inv:
-      volRpt.addLine(*volRptCommonLine)
+      volRpt.addLine(regionBreakVolume.lineBreak(currentRegion), *volRptCommonLine)
     elif tagData.delThisItem:
-      volRpt.addLine(*volRptCommonLine)
-      termList['VOLUME'][currentRegion][vol['VolumeId']] = {'DISPLAY_ID': vol['VolumeId'] + formatDispName(tagData.nameTag)}
+      volRpt.addLine(regionBreakVolume.lineBreak(currentRegion), *volRptCommonLine)
+      termTrack.x[termTrack.Volume][currentRegion][vol['VolumeId']] = {'DISPLAY_ID': vol['VolumeId'] + formatDispName(tagData.nameTag)}
 
   #################################################################
   #  Key Pairs
   #################################################################
   if 'secKeyPairsRpt' not in globals():
-    secKeyPairsRpt = awsRpt(*[["Region", 19],["KeyName", 30]])
+    secKeyPairsRpt = awsRpt(*[["Region", 16],["KeyName", 30]])
   # Skipping key pairs if deleting by tags (as they have no tags)
   if not aws_cleanupArg.del_tag:
-    regionBreak = regionBreakClass()
     response = client.describe_key_pairs()
     for resp in response['KeyPairs']:
       if aws_cleanupArg.inv:
-        secKeyPairsRpt.addLine(regionBreak.disp(currentRegion), resp['KeyName'])
+        secKeyPairsRpt.addLine(regionBreakKeyPairs.lineBreak(currentRegion), currentRegion, resp['KeyName'])
       else:
-        secKeyPairsRpt.addLine(regionBreak.disp(currentRegion), resp['KeyName'])
-        if not termList['KeyPairs'][currentRegion]:
-          termList['KeyPairs'][currentRegion] = [resp['KeyName']]
+        secKeyPairsRpt.addLine(regionBreakKeyPairs.lineBreak(currentRegion), currentRegion, resp['KeyName'])
+        if not termTrack.x[termTrack.KeyPairs][currentRegion]:
+          termTrack.x[termTrack.KeyPairs][currentRegion] = [resp['KeyName']]
         else:
-          termList['KeyPairs'][currentRegion].append(resp['KeyName'])
+          termTrack.x[termTrack.KeyPairs][currentRegion].append(resp['KeyName'])
 
 if ec2Rpt.rows > 0:
   output += '\nEC2 Instances{}:\n'.format(targetTagTitleInfo)
-  output += ec2Rpt.result() + "\n"
+  output += ec2Rpt.result() + "\n" * 2
 if secGroupRpt.rows > 0:
   output += '\nSecurity Groups{}:\n'.format(targetTagTitleInfo)
-  output += secGroupRpt.result() + "\n"
+  output += secGroupRpt.result() + "\n" * 2
 if volRpt.rows > 0:
   output += '\nVolumes{}:\n'.format(targetTagTitleInfo)
-  output += volRpt.result() + "\n"
+  output += volRpt.result() + "\n" * 2
 if secKeyPairsRpt.rows > 0:
   output += '\nKey Pairs:\n'
-  output += secKeyPairsRpt.result() + "\n"
+  output += secKeyPairsRpt.result() + "\n" * 2
 elif aws_cleanupArg.del_tag:
   output += '\nKey Pairs: not included for tag delete, as key pairs don''t have tags\n'
 
@@ -340,14 +367,14 @@ for buckets in clientS3.list_buckets()['Buckets']:
     bucketTag=[]
   tagData = tagScan(bucketTag, aws_cleanupArg)
   if aws_cleanupArg.inv:
-    s3Rpt.addLine(buckets['Name'], tagData.keepTagFound, tagData.targetTagFound)
+    s3Rpt.addLine(False, buckets['Name'], tagData.keepTagFound, tagData.targetTagFound)
   elif tagData.delThisItem:
-    s3Rpt.addLine(buckets['Name'], tagData.keepTagFound, tagData.targetTagFound)
-    if not termList['S3']:
-      # Initialize termList['S3'] bucket list
-      termList['S3'] = [buckets['Name']]
+    s3Rpt.addLine(False, buckets['Name'], tagData.keepTagFound, tagData.targetTagFound)
+    if not termTrack.x[termTrack.S3]:
+      # Initialize termTrack.x[termTrack.S3] bucket list
+      termTrack.x[termTrack.S3] = [buckets['Name']]
     else:
-      termList['S3'].append(buckets['Name'])
+      termTrack.x[termTrack.S3].append(buckets['Name'])
 if s3Rpt.rows > 0:
   output += '\nS3 Buckets{}:\n'.format(targetTagTitleInfo)
   output += s3Rpt.result()
@@ -357,7 +384,7 @@ if s3Rpt.rows > 0:
 print(output)
 print("\n")
 if not aws_cleanupArg.inv:
-  if not termList:
+  if not termTrack.x:
     print("No AWS items were found that were in-scope for terminating/deleting")
     if aws_cleanupArg.del_tag:
       print('Search tag: "{}"'.format('", "'.join(aws_cleanupArg.targetTag)))
@@ -387,8 +414,8 @@ if not aws_cleanupArg.inv:
     #  EC2 Instances terminate
     #################################################################
     if verifyTermProceed == verifyDelCode:
-      if 'EC2' in termList:
-        for currentRegion,idDict in termList['EC2'].items():
+      if termTrack.EC2 in termTrack.x:
+        for currentRegion,idDict in termTrack.x[termTrack.EC2].items():
           ec2 = boto3.resource('ec2',region_name=currentRegion)
 
           for id, idDetail in idDict.items():
@@ -414,7 +441,7 @@ if not aws_cleanupArg.inv:
                 print("   ", e, '\n')
         #  Loop through terminated instances and wait for the termination to 
         #  complete before continuing.
-        for currentRegion,idDict in termList['EC2'].items():
+        for currentRegion,idDict in termTrack.x[termTrack.EC2].items():
           ec2 = boto3.resource('ec2',region_name=currentRegion)
           for id, idDetail in idDict.items():
             if idDetail['TERMINATED']:
@@ -425,9 +452,9 @@ if not aws_cleanupArg.inv:
       #################################################################
       #  Security Groups delete
       #################################################################
-      if 'SECGROUP' in termList:
+      if termTrack.SecGroup in termTrack.x:
         #  Delete Security Groups
-        for currentRegion,idDict in termList['SECGROUP'].items():
+        for currentRegion,idDict in termTrack.x[termTrack.SecGroup].items():
           ec2 = boto3.resource('ec2',region_name=currentRegion)
           for id, idDetail in idDict.items():
             print('Deleting ' + currentRegion + ' Security Group ' + idDetail['DISPLAY_ID'])
@@ -439,10 +466,10 @@ if not aws_cleanupArg.inv:
       #################################################################
       #  Volumes delete
       #################################################################
-      if 'VOLUME' in termList:
+      if termTrack.Volume in termTrack.x:
         #  Delete Security Groups
         print("NOTE: Volumes may already been deleted with assoicated EC2 instances.")
-        for currentRegion,idDict in termList['VOLUME'].items():
+        for currentRegion,idDict in termTrack.x[termTrack.Volume].items():
           ec2 = boto3.resource('ec2',region_name=currentRegion)
           for id, idDetail in idDict.items():
             print('Deleting ' + currentRegion + ' Volume ' + idDetail['DISPLAY_ID'])
@@ -458,8 +485,8 @@ if not aws_cleanupArg.inv:
       #################################################################
       #  Key Pairs delete
       #################################################################
-      if 'KeyPairs' in termList:
-        for currentRegion,idDict in termList['KeyPairs'].items():
+      if termTrack.KeyPairs in termTrack.x:
+        for currentRegion,idDict in termTrack.x[termTrack.KeyPairs].items():
           ec2 = boto3.resource('ec2',region_name=currentRegion)
           for colData in idDict:
             print('Deleting Key Pair "' + colData + '"')
@@ -472,9 +499,9 @@ if not aws_cleanupArg.inv:
       #################################################################
       #  S3 buckets delete
       #################################################################
-      if 'S3' in termList:
+      if termTrack.S3 in termTrack.x:
         s3 = boto3.resource('s3')
-        for bucketName in termList['S3']:
+        for bucketName in termTrack.x[termTrack.S3]:
           #  Before a bucket can be deleted, the objects in the bucket first have to be
           #  deleted.
           print('Deleting any objects contained in S3 Bucket ' + bucketName + '...')
