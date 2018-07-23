@@ -10,7 +10,7 @@
 - Internet Gateways 
 - Route Tables
 
-## Running aws_cleanup.py:
+## Running aws_cleanup.py (both file aws_cleanup.py AND aws_cleanup_ext.py need to be in the same directory):
 - **INVENTORY OF AWS COMPONENTS (_no deletion_):**
   - **``# python3 aws_cleanup.py``**  
     Run without parameters, aws_cleanup.py displays an inventory of AWS components for all regions. The column "keep(Tag)" shows which AWS items have the tag key "keep". When "aws_cleanup.py --del" is run, items with “keep” tag key are not deleted.
