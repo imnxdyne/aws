@@ -12,22 +12,52 @@
 #     during dev testing for improved performance). Changed region break format.
 #  2018.07.17 - ww - Added VPC, subnets, internet gateways, route tables. Added a couple
 #     dependency warnings.
+#  2018.07.23 - ww - Shifted variables that could be updated by end-user to external file
+#                    aws_cleanup_ext.py (could be convinced to place these variables back into
+#                    this script). Corrected subnets order in deletion. Changed
+#                    argument storage from class to namedtuple.
 import sys
 import os
 import re
 import random
+import signal
 try:
   import boto3
 except ImportError as e:
   print('This script requires Boto3 to be installed and configured.')
   print('Can install via "pip install boto3"')
-  exit()
+  exit(1)
 import argparse
 import io
 import textwrap
-from collections import deque
 from botocore.exceptions import ClientError,NoCredentialsError,EndpointConnectionError
-from collections import defaultdict,namedtuple    # used for initializing nested dictionaries
+from collections import deque,defaultdict,namedtuple    # used for initializing nested dictionaries
+try:
+  from aws_cleanup_ext import constantKeepTag, componentDef, awsComponentClass, aws_cleanup_ext_ver
+except ImportError:
+  print('ERROR: aws_cleanup_ext.py is missing. This file is required')
+  exit(1)
+
+def signal_handler(sig, frame):
+        print('\nTERMINATING SCRIPT')
+        sys.exit(0)
+signal.signal(signal.SIGINT, signal_handler)
+
+aws_cleanup_main_ver = 2.5
+if aws_cleanup_ext_ver != aws_cleanup_main_ver:
+  print('WARNING: incorrect version of aws_cleanup_ext.py file (version number is {0}; expected {1}).'.format(aws_cleanup_ext_ver, aws_cleanup_main_ver))
+  ign = input('Press enter to continue: ')
+
+#  Setting up a named tuple for consolidating all the arguments passed plus a location
+#  to store the normalized targetTag & keepTag. Believe that Python 3.7 has a better
+#  method for defining the "default".
+scriptArgsTuple = namedtuple('scriptArgsTuple', ['inv', 'del_tag', 'del_all', 'targetTag', 'keepTag'])
+scriptArgsTuple.__new__.__defaults__ = (False, False, False, None, constantKeepTag)
+
+def signal_handler(sig, frame):
+        print('\nTERMINATING SCRIPT')
+        sys.exit(0)
+signal.signal(signal.SIGINT, signal_handler)
 
 def formatDispName(*parNames):
   parNamesDisp = []
@@ -41,7 +71,7 @@ def formatDispName(*parNames):
   return retName
 
 
-def chkRouteAssociations(parRouteId):
+def chkRouteAssociations(parRouteId, parScriptArg):
   #  Digging through the route table associations to see if the route table is set as 'Main' 
   #  was repeated in a couple areas - easier to have as a function and include any
   #  associated subnets.
@@ -52,33 +82,13 @@ def chkRouteAssociations(parRouteId):
   for idChk in clientEC2Route.describe_route_tables(Filters=[{'Name': 'route-table-id', 'Values':[parRouteId]}])['RouteTables']:
     if idChk['Associations']:
       for chkAssociations in idChk['Associations']:
-        if 'Main' in chkAssociations and chkAssociations['Main']:
+        if chkAssociations.get('Main'):
           routeTableIsMain = True
-        if 'SubnetId' in chkAssociations:
-          routeTableSubnets.append(chkAssociations['SubnetId'])
-  return{'Main': routeTableIsMain, 'Subnets': ', '.join(routeTableSubnets)}
+        if chkAssociations.get('SubnetId'):
+          subnetInfo = clientEC2Route.describe_subnets(Filters=[{'Name':'subnet-id', 'Values':[chkAssociations['SubnetId']]}])['Subnets'][0]
+          routeTableSubnets.append(chkAssociations['SubnetId'] + tagNameFind(subnetInfo.get('Tags'), parScriptArg))
+  return{'Main': routeTableIsMain, 'Subnets': routeTableSubnets}
 
-componentDef = namedtuple("componentDef", ['compName', 'compDelete'])
-class termTrackClass:
-  def __init__(self):
-    # Initialize the dictionary of items to delete/terminate
-    self.x=defaultdict(lambda : defaultdict(dict))
- 
-    #  The value "compName" is utilized for two things:
-    #    1) Unique dictionary index for termTrackClass attribute "x"
-    #    2) Title / display name
-    #  CompDelete is for future use
-    self.EC2 = componentDef(compName = 'EC2 instances', compDelete = True)
-    self.SecGroup = componentDef(compName = 'Security Groups', compDelete = True)
-    self.Volume = componentDef(compName = 'Volumes', compDelete = True)
-    self.KeyPairs = componentDef(compName = 'Key Pairs', compDelete = True)
-    self.S3 = componentDef(compName = 'S3 Buckets', compDelete = True)
-    self.VPC = componentDef(compName = 'VPC', compDelete = True)
-    self.Subnet = componentDef(compName = 'Subnets', compDelete = True)
-    self.InternetGateway = componentDef(compName = 'Internet Gateways', compDelete = True)
-    self.RouteTable = componentDef(compName = 'Route Tables', compDelete = True)
-
-  
 class regionBreakNewClass:
   def __init__(self):
     self.newRpt = True
@@ -93,27 +103,7 @@ class regionBreakNewClass:
         returnVal = True
         self.regionNameTrack = regionName
     return returnVal
-
-
   
-class scriptArgs:
-  def __init__(self, choice, targetTag = None, keepTag = "keep"):
-    self.del_tag = self.del_all = self.inv = False
-    if choice == "inv":
-      self.inv = True
-    elif choice == "del_all":
-      self.del_all = True
-    elif choice == "del_tag":
-      self.del_tag = True
-    else:
-      raise ValueError('scriptArgs', 'Invalid value passed to scriptArgs')
-    self.targetTag = targetTag
-    if self.targetTag:
-      #  Cleanup any empty strings in target tag list
-      tagEx = re.compile('^\s*$')
-      self.targetTag = [tag for tag in self.targetTag if not tagEx.match(tag)]
-    self.keepTag = keepTag
-
 class awsRpt:
   def __init__(self, *header):
     self.outputRpt = ""
@@ -185,33 +175,61 @@ class awsRpt:
   def result(self):
     return self.lines + "\n" +  self.header + "\n" + self.lines + "\n" + self.outputRpt + "\n" + self.lines
 
+def tagNameFind(parTagList, parScriptArg):
+  if parTagList is None:
+    parTagList = []
+  nameTagValue = dispKeepTagKeyList = ""
+  keepTagKeyList = []
+  for t in parTagList:
+    if t['Key'] == 'Name':
+      nameTagValue = t.get('Value')
+    else:
+      for searchKeepTag in parScriptArg.keepTag:
+        if re.search('^'+re.escape(searchKeepTag)+'$', t.get('Key'), re.IGNORECASE):
+          keepTagKeyList.append(t.get('Key'))
+  if keepTagKeyList:
+    dispKeepTagKeyList = " [{0}]".format(', '.join(keepTagKeyList))
+  if nameTagValue or dispKeepTagKeyList:
+    nameTag = " ({0}{1})".format(nameTagValue, keepTagKeyList)
+  else:
+    nameTag = "" 
+  return nameTag
+  
 class tagScan:
   #  tagScan contains AWS item object's derived attributes (at least as much as could be
   #  derived).
-  def __init__(self, tagList, scriptArg):
+  def __init__(self, parTagList, parScriptArg):
+    #  If parTagList is none, set as empty list to bypass for-loop.
+    if parTagList is None:
+      parTagList = []
     self.nameTag = ""
     self.delThisItem = False
-    if scriptArg.targetTag is None:
+    if parScriptArg.targetTag is None:
       self.targetTagFound = None
     else:
       self.targetTagFound = ""
     self.keepTagFound = ""
-    for t in tagList:
+    for t in parTagList:
       if t['Key'] == 'Name':
         self.nameTag = t['Value']
-      elif scriptArg.keepTag and re.search('^'+re.escape(scriptArg.keepTag)+'$', t['Key'], re.IGNORECASE):
-        self.keepTagFound = "Yes"
-      elif scriptArg.targetTag is not None:
-        for searchTag in scriptArg.targetTag:
-          if re.search('^'+re.escape(searchTag)+'$', t['Key'], re.IGNORECASE):
-            if self.targetTagFound:
-              self.targetTagFound += ", " + searchTag
-            else:
-              self.targetTagFound = searchTag
+      else:
+        thisTagIsKeep = False
+        if parScriptArg.keepTag is not None:
+          for searchKeepTag in parScriptArg.keepTag:
+            if re.search('^'+re.escape(searchKeepTag)+'$', t['Key'], re.IGNORECASE):
+              self.keepTagFound = "Yes"
+              thisTagIsKeep = True
+        if not thisTagIsKeep and parScriptArg.targetTag is not None:
+          for searchTag in parScriptArg.targetTag:
+            if re.search('^'+re.escape(searchTag)+'$', t['Key'], re.IGNORECASE):
+              if self.targetTagFound:
+                self.targetTagFound += ", " + searchTag
+              else:
+                self.targetTagFound = searchTag
     if not self.keepTagFound:
-      if scriptArg.del_all:
+      if parScriptArg.del_all:
         self.delThisItem = True
-      elif scriptArg.del_tag and self.targetTagFound:
+      elif parScriptArg.del_tag and self.targetTagFound:
         self.delThisItem = True
         
 argUsage = "usage: aws_cleanup.py -[h][--del][--tag <tag_key1> [<tag_key2> [tag_key# ..]]]"
@@ -221,23 +239,37 @@ parser.add_argument('-d', '--del', dest='delete', help='delete/terminate AWS com
 parser.add_argument('-t', '--tag', nargs='+', help='search for components with a specific key value')
 parser.add_argument('--test_region', help='reduces number of in-scope regions for code testing for better performance -wfw', action="store_true", default=False)
 args = parser.parse_args()
+#  Normalize and evaluate args.tag list for errors:
+if args.tag is not None:
+  #  Remove any blank tags
+  tagEx = re.compile('^\s*$')
+  args.tag = [tag for tag in args.tag if not tagEx.match(tag)]
+
+  #  Remove any duplicates
+  args.tag = list(set(args.tag))
+  #  If args.tag was used but contains no data, raise an error
+  if len(args.tag) == 0:
+    print(argUsage)
+    print("aws_cleanup.py: error: argument --tag: expected at least one argument")
+    exit(5)
+
+  #  Raise an error if any of the tag arguments are "keep" values.
+  errArgsKeepTag = False
+  for inspArgsTag in args.tag:
+    for inspKeepTag in constantKeepTag:
+      if re.search('^'+re.escape(inspKeepTag)+'$', inspArgsTag, re.IGNORECASE):
+        print('\nERROR: --tag cannot include the value "{0}".\nThe tag key "{0}" is used to identify which AWS items can\'t be terminated or deleted.'.format(inspKeepTag))
+        errArgsKeepTag = True
+  if errArgsKeepTag:
+    exit(6)
 if args.delete:
   if args.tag:
-    aws_cleanupArg = scriptArgs(choice='del_tag', targetTag=args.tag)
+    aws_cleanupArg = scriptArgsTuple(del_tag=True, targetTag=args.tag)
   else:
-    aws_cleanupArg = scriptArgs(choice='del_all')
+    aws_cleanupArg = scriptArgsTuple(del_all=True)
 else:
-  aws_cleanupArg = scriptArgs(choice='inv', targetTag=args.tag)
-#exit()
-if aws_cleanupArg.targetTag is not None and len(aws_cleanupArg.targetTag) == 0:
-  print(argUsage)
-  print("aws_cleanup.py: error: argument --tag: expected at least one argument")
-  exit(5)
+  aws_cleanupArg = scriptArgsTuple(inv=True, targetTag=args.tag)
 
-# Make sure the "keep" tag isn't in the targetTag list.
-if aws_cleanupArg.targetTag is not None and aws_cleanupArg.keepTag in aws_cleanupArg.targetTag:
-  print('\nERROR: --tag cannot include the value "{0}".\nThe tag key "{0}" is used to identify which  AWS items can\'t be terminated or deleted'.format(aws_cleanupArg.keepTag))
-  exit(6)
 if aws_cleanupArg.targetTag:
   targetTagHeader = ["Search Tag",18,"<"]
   targetTagTitleInfo = ' (search tag "{}")'.format('", "'.join(aws_cleanupArg.targetTag))
@@ -245,18 +277,24 @@ else:
   targetTagHeader = None
   targetTagTitleInfo = ''
 
-keepTagHeader = [aws_cleanupArg.keepTag+"(Tag)","","^"]
+keepTagHeader = [', '.join(aws_cleanupArg.keepTag)+"(Tag)","","^"]
 
+awsComponent = awsComponentClass()
 # Initialize the dictionary of items to delete/terminate
-termTrack = termTrackClass()
+termTrack = defaultdict(lambda : defaultdict(dict))
+noDeleteList = []
 print('AWS components in-scope for {}:'.format(sys.argv[0]))
-for id, idDetail in vars(termTrack).items():
+for id, idDetail in vars(awsComponent).items():
   if type(idDetail) is componentDef:
-    print('  * {}'.format(idDetail.compName))
-
+    print('  * {0} {1}'.format(idDetail.compName, ('' if idDetail.compDelete or aws_cleanupArg.inv else '\t*** DELETE DISABLED ***')))
+    if not (aws_cleanupArg.inv or idDetail.compDelete):
+      noDeleteList.append(idDetail.compName)
+if aws_cleanupArg.keepTag:
+  print('Tag used to identify which AWS items can\'t be terminated or deleted: {0}'.format(', '.join(aws_cleanupArg.keepTag)))
+print("\n")
 # Load all regions from AWS into region list.
 # As this is where the initial connection occurs to AWS, included a couple traps to handle
-# connectivity errors - network MIA, invalid AWS credentials, missing AWS aws credentials,....
+# connectivity errors - network MIA, invalid AWS credentials, missing AWS credentials,....
 try:
   regions = [region['RegionName'] for region in boto3.client('ec2').describe_regions()['Regions']]
 except NoCredentialsError as e:
@@ -283,11 +321,9 @@ if args.test_region:
 #  targetTag is the regex pattern used to identify what needs to be listed in the inventory
 #  and possibly terminated. targetTag is used in searching the AWS component
 #  tag (complete value) OR as a substring in the component's name
-print("\n")
 print('Inventory of ALL AWS components\n')
 output=""
 securityGroupDepend=defaultdict(lambda : defaultdict(dict))
-keepEC2=defaultdict(lambda : defaultdict(dict))
 regionBreakEC2 = regionBreakNewClass()
 regionBreakSecGroup = regionBreakNewClass()
 regionBreakVolume = regionBreakNewClass()
@@ -305,38 +341,34 @@ for currentRegion in sorted(regions):
   #################################################################
   if 'ec2Rpt' not in globals():
     ec2Rpt = awsRpt(*[["Region", 16],["Instance ID", 25],["Name(Tag)", 30],keepTagHeader, targetTagHeader,["Image ID", 30],["Status", 13]])
-  for resp in clientEC2Region.describe_instances()['Reservations']:
-    for inst in resp['Instances']:
-      tagData = tagScan(inst['Tags'] if 'Tags' in inst else [], aws_cleanupArg)
-      if aws_cleanupArg.inv:
-        ec2Rpt.addLine(regionBreakEC2.lineBreak(currentRegion), currentRegion, inst['InstanceId'],tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound,inst['ImageId'],inst['State']['Name'])
-      elif inst['State']['Name'] != 'terminated':
-        if tagData.delThisItem:
+  #  ...CompSci truth tables from WWU...
+  if aws_cleanupArg.inv or awsComponent.EC2.compDelete:
+    for resp in clientEC2Region.describe_instances()['Reservations']:
+      for inst in resp['Instances']:
+        tagData = tagScan(inst.get('Tags'), aws_cleanupArg)
+        if aws_cleanupArg.inv:
           ec2Rpt.addLine(regionBreakEC2.lineBreak(currentRegion), currentRegion, inst['InstanceId'],tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound,inst['ImageId'],inst['State']['Name'])
-          termTrack.x[termTrack.EC2][currentRegion][inst['InstanceId']] = {'DISPLAY_ID': inst['InstanceId'] + formatDispName(tagData.nameTag),'TERMINATED':False}
-        elif aws_cleanupArg.del_tag:
-          for secGroup in inst['SecurityGroups']:
-            if secGroup['GroupId'] not in keepEC2[currentRegion]:
-              keepEC2[currentRegion][secGroup['GroupId']]= {'DEPENDENCY':False,'LIST':[]}
-            keepEC2[currentRegion][secGroup['GroupId']]['LIST'].append(inst['InstanceId'])
+        elif inst['State']['Name'] != 'terminated':
+          if tagData.delThisItem:
+            ec2Rpt.addLine(regionBreakEC2.lineBreak(currentRegion), currentRegion, inst['InstanceId'],tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound,inst['ImageId'],inst['State']['Name'])
+            termTrack[awsComponent.EC2][currentRegion][inst['InstanceId']] = {'DISPLAY_ID': inst['InstanceId'] + formatDispName(tagData.nameTag),'TERMINATED':False}
 
   #################################################################
   #  Security Group
   #################################################################
   if 'secGroupRpt' not in globals():
     secGroupRpt = awsRpt(*[["Region", 16],["Group ID", 25],["Name(Tag)", 30],keepTagHeader,targetTagHeader,["Group Name", 30],["Description", 35]])
-  for resp in clientEC2Region.describe_security_groups()['SecurityGroups']:
-    # ... can't do anything with the default security group
-    if resp['GroupName'] != 'default':
-      tagData = tagScan(resp['Tags'] if 'Tags' in resp else [], aws_cleanupArg)
-      secGroupRptCommonLine = (currentRegion, resp['GroupId'],tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound,resp['GroupName'],resp['Description'])
-      if aws_cleanupArg.inv:
-        secGroupRpt.addLine(regionBreakSecGroup.lineBreak(currentRegion), *secGroupRptCommonLine)
-      elif tagData.delThisItem:
-        secGroupRpt.addLine(regionBreakSecGroup.lineBreak(currentRegion), *secGroupRptCommonLine)
-        termTrack.x[termTrack.SecGroup][currentRegion][resp['GroupId']] = {'DISPLAY_ID': resp['GroupId'] + formatDispName(tagData.nameTag, resp['GroupName'], resp['Description'])}
-        if aws_cleanupArg.del_tag and resp['GroupId'] in keepEC2[currentRegion]:
-          keepEC2[currentRegion][resp['GroupId']]['DEPENDENCY'] = True
+  if aws_cleanupArg.inv or awsComponent.SecGroup.compDelete:
+    for resp in clientEC2Region.describe_security_groups()['SecurityGroups']:
+      # ... can't do anything with the default security group
+      if resp['GroupName'] != 'default':
+        tagData = tagScan(resp.get('Tags'), aws_cleanupArg)
+        secGroupRptCommonLine = (currentRegion, resp['GroupId'],tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound,resp['GroupName'],resp['Description'])
+        if aws_cleanupArg.inv:
+          secGroupRpt.addLine(regionBreakSecGroup.lineBreak(currentRegion), *secGroupRptCommonLine)
+        elif tagData.delThisItem:
+          secGroupRpt.addLine(regionBreakSecGroup.lineBreak(currentRegion), *secGroupRptCommonLine)
+          termTrack[awsComponent.SecGroup][currentRegion][resp['GroupId']] = {'DISPLAY_ID': resp['GroupId'] + formatDispName(tagData.nameTag, resp['GroupName'], resp['Description'])}
           
 
   #################################################################
@@ -344,31 +376,33 @@ for currentRegion in sorted(regions):
   #################################################################
   if 'volRpt' not in globals():
     volRpt = awsRpt(*[["Region", 16],["Volume ID", 25],["Name(Tag)", 30],keepTagHeader,targetTagHeader,["Vol Type", 10],["State", 15]])
-  for vol in clientEC2Region.describe_volumes()['Volumes']:
-    tagData = tagScan(vol['Tags'] if 'Tags' in vol else [], aws_cleanupArg)
-    volRptCommonLine = (currentRegion, vol['VolumeId'],tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound,vol['VolumeType'],vol['State'])
-    if aws_cleanupArg.inv:
-      volRpt.addLine(regionBreakVolume.lineBreak(currentRegion), *volRptCommonLine)
-    elif tagData.delThisItem:
-      volRpt.addLine(regionBreakVolume.lineBreak(currentRegion), *volRptCommonLine)
-      termTrack.x[termTrack.Volume][currentRegion][vol['VolumeId']] = {'DISPLAY_ID': vol['VolumeId'] + formatDispName(tagData.nameTag)}
+  if aws_cleanupArg.inv or awsComponent.Volume.compDelete:
+    for vol in clientEC2Region.describe_volumes()['Volumes']:
+      tagData = tagScan(vol.get('Tags'), aws_cleanupArg)
+      volRptCommonLine = (currentRegion, vol['VolumeId'],tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound,vol['VolumeType'],vol['State'])
+      if aws_cleanupArg.inv:
+        volRpt.addLine(regionBreakVolume.lineBreak(currentRegion), *volRptCommonLine)
+      elif tagData.delThisItem:
+        volRpt.addLine(regionBreakVolume.lineBreak(currentRegion), *volRptCommonLine)
+        termTrack[awsComponent.Volume][currentRegion][vol['VolumeId']] = {'DISPLAY_ID': vol['VolumeId'] + formatDispName(tagData.nameTag)}
 
   #################################################################
   #  Key Pairs
   #################################################################
   if 'secKeyPairsRpt' not in globals():
     secKeyPairsRpt = awsRpt(*[["Region", 16],["KeyName", 30]])
-  # Skipping key pairs if deleting by tags (as they have no tags)
-  if not aws_cleanupArg.del_tag:
-    for resp in clientEC2Region.describe_key_pairs()['KeyPairs']:
-      if aws_cleanupArg.inv:
-        secKeyPairsRpt.addLine(regionBreakKeyPairs.lineBreak(currentRegion), currentRegion, resp['KeyName'])
-      else:
-        secKeyPairsRpt.addLine(regionBreakKeyPairs.lineBreak(currentRegion), currentRegion, resp['KeyName'])
-        if not termTrack.x[termTrack.KeyPairs][currentRegion]:
-          termTrack.x[termTrack.KeyPairs][currentRegion] = [resp['KeyName']]
+  if aws_cleanupArg.inv or awsComponent.KeyPairs.compDelete:
+    # Skipping key pairs if deleting by tags (as they have no tags)
+    if not aws_cleanupArg.del_tag:
+      for resp in clientEC2Region.describe_key_pairs()['KeyPairs']:
+        if aws_cleanupArg.inv:
+          secKeyPairsRpt.addLine(regionBreakKeyPairs.lineBreak(currentRegion), currentRegion, resp['KeyName'])
         else:
-          termTrack.x[termTrack.KeyPairs][currentRegion].append(resp['KeyName'])
+          secKeyPairsRpt.addLine(regionBreakKeyPairs.lineBreak(currentRegion), currentRegion, resp['KeyName'])
+          if not termTrack[awsComponent.KeyPairs][currentRegion]:
+            termTrack[awsComponent.KeyPairs][currentRegion] = [resp['KeyName']]
+          else:
+            termTrack[awsComponent.KeyPairs][currentRegion].append(resp['KeyName'])
 
 if ec2Rpt.rows > 0:
   output += '\nEC2 Instances{}:\n'.format(targetTagTitleInfo)
@@ -389,14 +423,15 @@ elif aws_cleanupArg.del_tag:
 #  VPC
 #################################################################
 vpcRpt = awsRpt(*[["CIDR Block", 20],["VPC ID", 25],["Name(Tag)", 30],keepTagHeader,targetTagHeader,["State", 10]])
-for vpcs in clientEC2.describe_vpcs()['Vpcs']:
-  tagData = tagScan(vpcs['Tags'] if 'Tags' in vpcs else [], aws_cleanupArg)
-  vpcsRptCommonLine = (vpcs['CidrBlock'], vpcs['VpcId'], tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound,vpcs['State'])
-  if aws_cleanupArg.inv:
-    vpcRpt.addLine(False, *vpcsRptCommonLine)
-  elif tagData.delThisItem:
-    vpcRpt.addLine(False, *vpcsRptCommonLine)
-    termTrack.x[termTrack.VPC][vpcs['VpcId']] = {'DISPLAY_ID': vpcs['VpcId'] + formatDispName(tagData.nameTag, vpcs['CidrBlock'])}
+if aws_cleanupArg.inv or awsComponent.VPC.compDelete:
+  for vpcs in clientEC2.describe_vpcs()['Vpcs']:
+    tagData = tagScan(vpcs.get('Tags'), aws_cleanupArg)
+    vpcsRptCommonLine = (vpcs['CidrBlock'], vpcs['VpcId'], tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound,vpcs['State'])
+    if aws_cleanupArg.inv:
+      vpcRpt.addLine(False, *vpcsRptCommonLine)
+    elif tagData.delThisItem:
+      vpcRpt.addLine(False, *vpcsRptCommonLine)
+      termTrack[awsComponent.VPC][vpcs['VpcId']] = {'DISPLAY_ID': vpcs['VpcId'] + formatDispName(tagData.nameTag, vpcs['CidrBlock'])}
 if vpcRpt.rows > 0:
   output += '\nVPC{}:\n'.format(targetTagTitleInfo)
   output += vpcRpt.result()  + "\n" * 2
@@ -405,19 +440,20 @@ if vpcRpt.rows > 0:
 #  Route Table
 #################################################################
 routeTableRpt = awsRpt(*[["Route Table ID", 28],["VPC ID", 25],["Main", 4],["Name(Tag)", 30],keepTagHeader,targetTagHeader])
-for routeTables in clientEC2.describe_route_tables()['RouteTables']:
-  tagData = tagScan(routeTables['Tags'] if 'Tags' in routeTables else [], aws_cleanupArg)
-  routeAssociations = chkRouteAssociations(routeTables['RouteTableId'])
-  if routeAssociations['Main']: 
-    routeTableDispMain = "Yes"
-  else:
-    routeTableDispMain = "No"
-  routeTableRptCommonLine = (routeTables['RouteTableId'], routeTables['VpcId'], routeTableDispMain, tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound)
-  if aws_cleanupArg.inv:
-    routeTableRpt.addLine(False, *routeTableRptCommonLine)
-  elif tagData.delThisItem:
-    routeTableRpt.addLine(False, *routeTableRptCommonLine)
-    termTrack.x[termTrack.RouteTable][routeTables['RouteTableId']] = {'DISPLAY_ID': routeTables['RouteTableId'] + formatDispName(tagData.nameTag),'VpcId':routeTables['VpcId']}
+if aws_cleanupArg.inv or awsComponent.RouteTable.compDelete:
+  for routeTables in clientEC2.describe_route_tables()['RouteTables']:
+    tagData = tagScan(routeTables.get('Tags'), aws_cleanupArg)
+    routeAssociations = chkRouteAssociations(routeTables['RouteTableId'], aws_cleanupArg)
+    if routeAssociations['Main']: 
+      routeTableDispMain = "Yes"
+    else:
+      routeTableDispMain = "No"
+    routeTableRptCommonLine = (routeTables['RouteTableId'], routeTables['VpcId'], routeTableDispMain, tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound)
+    if aws_cleanupArg.inv:
+      routeTableRpt.addLine(False, *routeTableRptCommonLine)
+    elif tagData.delThisItem:
+      routeTableRpt.addLine(False, *routeTableRptCommonLine)
+      termTrack[awsComponent.RouteTable][routeTables['RouteTableId']] = {'DISPLAY_ID': routeTables['RouteTableId'] + formatDispName(tagData.nameTag),'VpcId':routeTables['VpcId']}
 if routeTableRpt.rows > 0:
   output += '\nRoute Tables{}:\n'.format(targetTagTitleInfo)
   output += routeTableRpt.result()  + "\n" * 2
@@ -427,20 +463,21 @@ if routeTableRpt.rows > 0:
 #  InternetGateway
 #################################################################
 internetGatewayRpt = awsRpt(*[["Internet Gateway ID", 28],["Attached VPC", 25],["VPC Status",10],["Name(Tag)", 30],keepTagHeader,targetTagHeader])
-for internetGateways  in clientEC2.describe_internet_gateways()['InternetGateways']:
-  if internetGateways['Attachments']:
-    internetGatewayDispVpcId = internetGateways['Attachments'][0]['VpcId']
-    internetGatewayDispState = internetGateways['Attachments'][0]['State']
-  else:
-    internetGatewayDispVpcId = ''
-    internetGatewayDispState = ''
-  tagData = tagScan(internetGateways['Tags'] if 'Tags' in internetGateways else [], aws_cleanupArg)
-  internetGatewayRptCommonLine = (internetGateways['InternetGatewayId'], internetGatewayDispVpcId, internetGatewayDispState, tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound)
-  if aws_cleanupArg.inv:
-    internetGatewayRpt.addLine(False, *internetGatewayRptCommonLine)
-  elif tagData.delThisItem:
-    internetGatewayRpt.addLine(False, *internetGatewayRptCommonLine)
-    termTrack.x[termTrack.InternetGateway][internetGateways['InternetGatewayId']] = {'DISPLAY_ID': internetGateways['InternetGatewayId'] + formatDispName(tagData.nameTag),'VpcID':internetGatewayDispVpcId}
+if aws_cleanupArg.inv or awsComponent.InternetGateway.compDelete:
+  for internetGateways  in clientEC2.describe_internet_gateways()['InternetGateways']:
+    if internetGateways['Attachments']:
+      internetGatewayDispVpcId = internetGateways['Attachments'][0]['VpcId']
+      internetGatewayDispState = internetGateways['Attachments'][0]['State']
+    else:
+      internetGatewayDispVpcId = ''
+      internetGatewayDispState = ''
+    tagData = tagScan(internetGateways.get('Tags'), aws_cleanupArg)
+    internetGatewayRptCommonLine = (internetGateways['InternetGatewayId'], internetGatewayDispVpcId, internetGatewayDispState, tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound)
+    if aws_cleanupArg.inv:
+      internetGatewayRpt.addLine(False, *internetGatewayRptCommonLine)
+    elif tagData.delThisItem:
+      internetGatewayRpt.addLine(False, *internetGatewayRptCommonLine)
+      termTrack[awsComponent.InternetGateway][internetGateways['InternetGatewayId']] = {'DISPLAY_ID': internetGateways['InternetGatewayId'] + formatDispName(tagData.nameTag),'VpcID':internetGatewayDispVpcId}
 if internetGatewayRpt.rows > 0:
   output += '\nInternet Gateway{}:\n'.format(targetTagTitleInfo)
   output += internetGatewayRpt.result()  + "\n" * 2
@@ -450,14 +487,15 @@ if internetGatewayRpt.rows > 0:
 #  Subnet
 #################################################################
 subnetRpt = awsRpt(*[["CIDR Block", 20],["Subnet ID", 28],["VPC ID", 25],["Name(Tag)", 30],keepTagHeader,targetTagHeader,["State", 10]])
-for subnets in clientEC2.describe_subnets()['Subnets']:
-  tagData = tagScan(subnets['Tags'] if 'Tags' in subnets else [], aws_cleanupArg)
-  subnetRptCommonLine = (subnets['CidrBlock'], subnets['SubnetId'], subnets['VpcId'], tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound,subnets['State'])
-  if aws_cleanupArg.inv:
-    subnetRpt.addLine(False, *subnetRptCommonLine)
-  elif tagData.delThisItem:
-    subnetRpt.addLine(False, *subnetRptCommonLine)
-    termTrack.x[termTrack.Subnet][subnets['SubnetId']] = {'DISPLAY_ID': subnets['SubnetId'] + formatDispName(tagData.nameTag, subnets['CidrBlock'])}
+if aws_cleanupArg.inv or awsComponent.Subnet.compDelete:
+  for subnets in clientEC2.describe_subnets()['Subnets']:
+    tagData = tagScan(subnets.get('Tags'), aws_cleanupArg)
+    subnetRptCommonLine = (subnets['CidrBlock'], subnets['SubnetId'], subnets['VpcId'], tagData.nameTag,tagData.keepTagFound,tagData.targetTagFound,subnets['State'])
+    if aws_cleanupArg.inv:
+      subnetRpt.addLine(False, *subnetRptCommonLine)
+    elif tagData.delThisItem:
+      subnetRpt.addLine(False, *subnetRptCommonLine)
+      termTrack[awsComponent.Subnet][subnets['SubnetId']] = {'DISPLAY_ID': subnets['SubnetId'] + formatDispName(tagData.nameTag, subnets['CidrBlock'])}
 if subnetRpt.rows > 0:
   output += '\nSubnet{}:\n'.format(targetTagTitleInfo)
   output += subnetRpt.result()  + "\n" * 2
@@ -467,23 +505,24 @@ if subnetRpt.rows > 0:
 #################################################################
 #  S3 Buckets
 #################################################################
-clientS3 = boto3.client('s3')
 s3Rpt = awsRpt(*[["Bucket Name", 40],keepTagHeader,targetTagHeader])
-for buckets in clientS3.list_buckets()['Buckets']:
-  try:
-    bucketTag = clientS3.get_bucket_tagging(Bucket=buckets['Name'])['TagSet']
-  except ClientError as e:
-    bucketTag=[]
-  tagData = tagScan(bucketTag, aws_cleanupArg)
-  if aws_cleanupArg.inv:
-    s3Rpt.addLine(False, buckets['Name'], tagData.keepTagFound, tagData.targetTagFound)
-  elif tagData.delThisItem:
-    s3Rpt.addLine(False, buckets['Name'], tagData.keepTagFound, tagData.targetTagFound)
-    if not termTrack.x[termTrack.S3]:
-      # Initialize termTrack.x[termTrack.S3] bucket list
-      termTrack.x[termTrack.S3] = [buckets['Name']]
-    else:
-      termTrack.x[termTrack.S3].append(buckets['Name'])
+if aws_cleanupArg.inv or awsComponent.S3.compDelete:
+  clientS3 = boto3.client('s3')
+  for buckets in clientS3.list_buckets()['Buckets']:
+    try:
+      bucketTag = clientS3.get_bucket_tagging(Bucket=buckets['Name'])['TagSet']
+    except ClientError as e:
+      bucketTag=[]
+    tagData = tagScan(bucketTag, aws_cleanupArg)
+    if aws_cleanupArg.inv:
+      s3Rpt.addLine(False, buckets['Name'], tagData.keepTagFound, tagData.targetTagFound)
+    elif tagData.delThisItem:
+      s3Rpt.addLine(False, buckets['Name'], tagData.keepTagFound, tagData.targetTagFound)
+      if not termTrack[awsComponent.S3]:
+        # Initialize termTrack[awsComponent.S3] bucket list
+        termTrack[awsComponent.S3] = [buckets['Name']]
+      else:
+        termTrack[awsComponent.S3].append(buckets['Name'])
 if s3Rpt.rows > 0:
   output += '\nS3 Buckets{}:\n'.format(targetTagTitleInfo)
   output += s3Rpt.result()
@@ -493,7 +532,7 @@ if s3Rpt.rows > 0:
 print(output)
 print("\n")
 if not aws_cleanupArg.inv:
-  if not termTrack.x:
+  if not termTrack:
     print("No AWS items were found that were in-scope for terminating/deleting")
     if aws_cleanupArg.del_tag:
       print('Search tag: "{}"'.format('", "'.join(aws_cleanupArg.targetTag)))
@@ -503,29 +542,21 @@ if not aws_cleanupArg.inv:
       print("Terminating/deleting ALL components")
     else:
       print('Deleting items with the tag(s): "' + '", "'.join(aws_cleanupArg.targetTag) + '"')
-      keepEC2Output = ""
-      if keepEC2:
-        for keepRegion, keepGroupItems in keepEC2.items():
-          for keepGroupId, keepGroupInfo in keepGroupItems.items():
-            if keepGroupInfo['DEPENDENCY']:
-              keepEC2Output = "  Region:" + keepRegion + ", Security Group: " + keepGroupId + ", Dependant EC2 Instances: " + ", ".join(keepGroupInfo['LIST'])
-      if keepEC2Output:
-        print('WARNING - the following Security Groups identified to delete have EC2 dependant instances NOT being deleted.')
-        print('          If you proceed, there will be a failure message for these Security Groups:')
-        print(keepEC2Output + "\n") 
+    if noDeleteList:
+      print('REMEMBER - DELETION/TERMINATION HAS BEEN DISABLED FOR THE FOLLOWING AWS COMPONENTS:\n\t{}'.format('\n\t'.join(noDeleteList)))
     #  Having the user type in something more that just "yes" to confirm they really
     #  want to terminate/delete AWS item(s).
     verifyDelCode = str(random.randint(0, 9999)).zfill(4)
-    print("\nWARNING: ALL AWS COMPONENTS LISTED ABOVE WILL BE TERMINATED/DELETED")
-    print("Verification Code ---> {}".format(verifyDelCode))
+    print("\nALL AWS COMPONENTS LISTED ABOVE WILL BE TERMINATED/DELETED. Verification Code ---> {}".format(verifyDelCode))
     verifyTermProceed = input('Enter above 4-digit Verification Code to proceed (ctrl-c to exit): ')
     #################################################################
     #  EC2 Instances terminate
     #################################################################
     if verifyTermProceed == verifyDelCode:
-      if termTrack.EC2 in termTrack.x:
-        for currentRegion,idDict in termTrack.x[termTrack.EC2].items():
-          ec2 = boto3.resource('ec2',region_name=currentRegion)
+      if awsComponent.EC2 in termTrack:
+        for currentRegion,idDict in termTrack[awsComponent.EC2].items():
+          ####wfw ####ec2 = boto3.resource('ec2',region_name=currentRegion)
+          clientEC2Region = boto3.client('ec2',region_name=currentRegion)
 
           for id, idDetail in idDict.items():
             print('Terminating ' + currentRegion + ' EC2 instance ' + idDetail['DISPLAY_ID'])
@@ -533,7 +564,7 @@ if not aws_cleanupArg.inv:
             #  Not sure if there's an advantage to having the DryRun test;
             #  will leave this segment of code in place for future.
             try:
-              response = ec2.Instance(id).terminate(DryRun=True)
+              response = clientEC2Region.terminate_instances(InstanceIds=[id], DryRun=True)
               #  Should never reach this point, but just in case...
               ec2DryRunSuccess = True
             except ClientError as e:
@@ -544,41 +575,47 @@ if not aws_cleanupArg.inv:
                 ec2DryRunSuccess = False
             if ec2DryRunSuccess:
               try:
-                response = ec2.Instance(id).terminate(DryRun=False)
+                response = clientEC2Region.terminate_instances(InstanceIds=[id], DryRun=False)
                 idDetail['TERMINATED'] = True
               except ClientError as e:
                 print("    ERROR:", e, '\n')
         #  Loop through terminated instances and wait for the termination to 
         #  complete before continuing.
-        for currentRegion,idDict in termTrack.x[termTrack.EC2].items():
-          ec2 = boto3.resource('ec2',region_name=currentRegion)
+        for currentRegion,idDict in termTrack[awsComponent.EC2].items():
+          clientEC2Region = boto3.client('ec2',region_name=currentRegion)
+          waiter = clientEC2Region.get_waiter('instance_terminated')
           for id, idDetail in idDict.items():
             if idDetail['TERMINATED']:
-              instance = ec2.Instance(id);
               print('Waiting for {0} EC2 instance {1} to terminate...'.format(currentRegion, idDetail['DISPLAY_ID']));
-              instance.wait_until_terminated()
-
+              waiter.wait(InstanceIds=[id])
+              
       #################################################################
       #  Security Groups delete
       #################################################################
-      if termTrack.SecGroup in termTrack.x:
+      if awsComponent.SecGroup in termTrack:
         #  Delete Security Groups
-        for currentRegion,idDict in termTrack.x[termTrack.SecGroup].items():
-          ec2 = boto3.resource('ec2',region_name=currentRegion)
+        for currentRegion,idDict in termTrack[awsComponent.SecGroup].items():
+          clientEC2Region = boto3.client('ec2',region_name=currentRegion)
           for id, idDetail in idDict.items():
             print('Deleting ' + currentRegion + ' Security Group ' + idDetail['DISPLAY_ID'])
+            conflictList = []
+            for instResvChk in clientEC2Region.describe_instances(Filters=[{'Name': 'instance.group-id', 'Values': [id]}])['Reservations']:
+              for instChk in instResvChk['Instances']:
+                conflictList.append(instChk['InstanceId'] + tagNameFind(instChk.get('Tags'), aws_cleanupArg))
+            if conflictList:
+              print('  WARNING: Security Group {0} is attached to the following EC2 instance(s):\n\t{1}'.format(id, '\n\t'.join(conflictList)))
             try:
-              response = ec2.SecurityGroup(id).delete(DryRun=False)
+              response = clientEC2Region.delete_security_group(GroupId = id, DryRun=False)
             except ClientError as e:
               print("    ERROR:", e, '\n')
- 
+
       #################################################################
       #  Volumes delete
       #################################################################
-      if termTrack.Volume in termTrack.x:
+      if awsComponent.Volume in termTrack:
         #  Delete Security Groups
         print("NOTE: Volumes may already been deleted with assoicated EC2 instances.")
-        for currentRegion,idDict in termTrack.x[termTrack.Volume].items():
+        for currentRegion,idDict in termTrack[awsComponent.Volume].items():
           clientEC2Region = boto3.client('ec2',region_name=currentRegion)
           for id, idDetail in idDict.items():
             print('Deleting ' + currentRegion + ' Volume ' + idDetail['DISPLAY_ID'])
@@ -594,8 +631,8 @@ if not aws_cleanupArg.inv:
       #################################################################
       #  Key Pairs delete
       #################################################################
-      if termTrack.KeyPairs in termTrack.x:
-        for currentRegion,idDict in termTrack.x[termTrack.KeyPairs].items():
+      if awsComponent.KeyPairs in termTrack:
+        for currentRegion,idDict in termTrack[awsComponent.KeyPairs].items():
           ec2 = boto3.resource('ec2',region_name=currentRegion)
           for colData in idDict:
             print('Deleting Key Pair "' + colData + '"')
@@ -604,25 +641,43 @@ if not aws_cleanupArg.inv:
             except ClientError as e:
               print("    ERROR:", e, '\n')
 
+      #################################################################
+      #  Subnet delete
+      #################################################################
+      if awsComponent.Subnet in termTrack:
+        for id, idDetail in termTrack[awsComponent.Subnet].items():
+          print('Deleting Subnet {}'.format(idDetail['DISPLAY_ID']))
+          conflictList = []
+          for instResvChk in clientEC2.describe_instances(Filters=[{'Name': 'subnet-id', 'Values': [id]}])['Reservations']:
+            for instChk in instResvChk['Instances']:
+              conflictList.append(instChk['InstanceId'] + tagNameFind(instChk.get('Tags'), aws_cleanupArg))
+          if conflictList:
+            print('  WARNING: subnet {0} is associated with the following EC2 instance(s):\n\t{1}'.format(id, '\n\t'.join(conflictList)))
+
+          try:
+            ign = clientEC2.delete_subnet(SubnetId=id)
+          except ClientError as e:
+            print("    ERROR:", e, '\n')
 
       #################################################################
       #  Route Tables delete
       #################################################################
-      if termTrack.RouteTable in termTrack.x:
-        for id, idDetail in termTrack.x[termTrack.RouteTable].items():
+      if awsComponent.RouteTable in termTrack:
+        for id, idDetail in termTrack[awsComponent.RouteTable].items():
           print('Deleting Route Table {}'.format(idDetail['DISPLAY_ID']))
           delRouteTable = True
           #  Check main
-          routeAssociations = chkRouteAssociations(id)
+          routeAssociations = chkRouteAssociations(id, aws_cleanupArg)
           if routeAssociations['Main']:
-            if termTrack.VPC in termTrack.x and idDetail['VpcId'] in termTrack.x[termTrack.VPC]:
-              print('  NOTE: {0} is the Main route table for VPC {1}, it is deleted automatically when VPC {1} is deleted.\n'.format(id, idDetail['VpcId']))
+            chkVpc = clientEC2.describe_vpcs(VpcIds=[idDetail['VpcId']])['Vpcs'][0]
+            if awsComponent.VPC in termTrack and idDetail['VpcId'] in termTrack[awsComponent.VPC]:
+              print('  NOTE: {0} is the Main route table for VPC {1}; it\'s deleted automatically when the VPC is deleted.\n'.format(id, idDetail['VpcId'] + tagNameFind(chkVpc.get('Tags'), aws_cleanupArg)))
               delRouteTable = False
             else:
-              print('    ERROR: {0} is the Main route table for VPC {1}, it cannot be deleted until VPC {1} is in-scope for deletion.'.format(id, idDetail['VpcId']))
+              print('  WARNING: {0} is the Main route table for VPC {1}; it cannot be deleted until the VPC is in-scope for deletion.'.format(id, idDetail['VpcId']  + tagNameFind(chkVpc.get('Tags'), aws_cleanupArg)))
           if delRouteTable:
             if routeAssociations['Subnets'] and not routeAssociations['Main']:
-              print('  WARNING: subnet(s) {0} are associated with route table {1}.'.format(routeAssociations['Subnets'], id))
+              print('  WARNING: Route Table {0} is associated with the following subnets:\n\t{1}.'.format(id, '\n\t'.join(routeAssociations['Subnets'])))
             try:
               ign = clientEC2.delete_route_table(RouteTableId=id)
             except ClientError as e:
@@ -631,8 +686,8 @@ if not aws_cleanupArg.inv:
       #################################################################
       #  Internet Gateway delete
       #################################################################
-      if termTrack.InternetGateway in termTrack.x:
-        for id, idDetail in termTrack.x[termTrack.InternetGateway].items():
+      if awsComponent.InternetGateway in termTrack:
+        for id, idDetail in termTrack[awsComponent.InternetGateway].items():
           error_detach_internet_gateway = False
           if idDetail['VpcID']:
             print('>> Detaching Internet Gateway {0} from VPC ID {1}'.format(idDetail['DISPLAY_ID'], idDetail['VpcID']))
@@ -650,49 +705,38 @@ if not aws_cleanupArg.inv:
 
 
       #################################################################
-      #  Subnet delete
-      #################################################################
-      if termTrack.Subnet in termTrack.x:
-        for id, idDetail in termTrack.x[termTrack.Subnet].items():
-          print('Deleting Subnet {}'.format(idDetail['DISPLAY_ID']))
-          try:
-            ign = clientEC2.delete_subnet(SubnetId=id)
-          except ClientError as e:
-            print("    ERROR:", e, '\n')
- 
-      #################################################################
       #  VPC delete
       #################################################################
-      if termTrack.VPC in termTrack.x:
-        for id, idDetail in termTrack.x[termTrack.VPC].items():
+      if awsComponent.VPC in termTrack:
+        for id, idDetail in termTrack[awsComponent.VPC].items():
           print('Deleting VPC {}'.format(idDetail['DISPLAY_ID']))
           #  Trap a couple simple error conditions. Provide warnings & explanation
           conflictList = []
           for idChk in clientEC2.describe_internet_gateways(Filters=[{'Name': 'attachment.vpc-id', 'Values': [id]}])['InternetGateways']:
-            conflictList.append(idChk['InternetGatewayId'])
+            conflictList.append(idChk['InternetGatewayId'] + tagNameFind(idChk.get('Tags'), aws_cleanupArg))
           if conflictList:
-            print('  WARNING: VPC {0} is attached to the following gateway(s): {1}'.format(id, ', '.join(conflictList)))
+            print('  WARNING: VPC {0} is attached to the following gateway(s):\n\t{1}'.format(id, '\n\t'.join(conflictList)))
 
           conflictList = []
           for idChk in clientEC2.describe_subnets(Filters=[{'Name': 'vpc-id', 'Values': [id]}])['Subnets']:
-            conflictList.append(idChk['SubnetId'])
+            conflictList.append(idChk['SubnetId']  + tagNameFind(idChk.get('Tags'), aws_cleanupArg))
           if conflictList:
-            print('  WARNING: VPC {0} is associated with the following subnet(s): {1}'.format(id, ', '.join(conflictList)))
+            print('  WARNING: VPC {0} is associated with the following subnet(s):\n\t{1}'.format(id, '\n\t'.join(conflictList)))
 
           conflictList = []
           for idChk in clientEC2.describe_route_tables(Filters=[{'Name': 'vpc-id', 'Values':[id]}])['RouteTables']:
-            routeAssociations = chkRouteAssociations(idChk['RouteTableId'])
+            routeAssociations = chkRouteAssociations(idChk['RouteTableId'], aws_cleanupArg)
             if not routeAssociations['Main']:
-              conflictList.append(idChk['RouteTableId'])
+              conflictList.append(idChk['RouteTableId']  + tagNameFind(idChk.get('Tags'), aws_cleanupArg))
           if conflictList:
-            print('  WARNING: VPC {0} is associated with the following route table(s): {1}'.format(id, ', '.join(conflictList)))
+            print('  WARNING: VPC {0} is associated with the following route table(s):\n\t{1}'.format(id, '\n\t'.join(conflictList)))
 
           conflictList = []
           for instResvChk in clientEC2.describe_instances(Filters=[{'Name': 'vpc-id', 'Values': [id]}])['Reservations']:
             for instChk in instResvChk['Instances']:
-              conflictList.append(instChk['InstanceId'])
+              conflictList.append(instChk['InstanceId'] + tagNameFind(instChk.get('Tags'), aws_cleanupArg))
           if conflictList:
-            print('  WARNING: VPC {0} is associated with the following EC2 instance(s): {1}'.format(id, ', '.join(conflictList)))
+            print('  WARNING: VPC {0} is associated with the following EC2 instance(s):\n\t{1}'.format(id, '\n\t'.join(conflictList)))
 
           try:
             ign = clientEC2.delete_vpc(VpcId=id)
@@ -702,9 +746,9 @@ if not aws_cleanupArg.inv:
       #################################################################
       #  S3 buckets delete
       #################################################################
-      if termTrack.S3 in termTrack.x:
+      if awsComponent.S3 in termTrack:
         s3 = boto3.resource('s3')
-        for bucketName in termTrack.x[termTrack.S3]:
+        for bucketName in termTrack[awsComponent.S3]:
           #  Before a bucket can be deleted, the objects in the bucket first have to be
           #  deleted.
           print('Deleting any objects contained in S3 Bucket ' + bucketName + '...')
