@@ -28,10 +28,10 @@ Both aws_cleanup.py AND aws_cleanup_ext.py files need to be in the same director
 
 
 ## Advanced Settings:
-**The file aws_cleanup_ext.py contains script control settings which can be modified by the end-user.**
+**The file aws_cleanup_ext.py contains script control settings that can be modified by the end-user.**
 - **``constantKeepTag = ['keep']``**  
-  Python list of tag keys that are blocked from deletion.  Can have multiple case-insensitive entries.  
-  Ex: to replace 'keep' with 'no_delete' and add the tag key 'wfw' for blocking, change constantKeepTag to the following:  
+  Python list of tag keys that flag AWS items from being deleted.  Can have multiple case-insensitive entries.  
+  Ex: to replace 'keep' with 'no_delete' and include tag key 'wfw' for blocking, change constantKeepTag to the following:  
     ``constantKeepTag =['no_delete', 'wfw']``
     
 - **``self.EC2 = componentDef(compName = 'EC2 instances', compDelete = True)``**  
