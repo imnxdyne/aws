@@ -37,7 +37,8 @@ Both aws_cleanup.py AND aws_cleanup_ext.py files need to be in the same director
 - **``self.EC2 = componentDef(compName = 'EC2 instances', compDelete = True)``**  
   **``self.SecGroup = componentDef(compName = 'Security Groups', compDelete = True)``**  
   **``self.Volume = componentDef(compName = 'Volumes', compDelete = True)``**  
-  **``self.KeyPairs = componentDef(compName = 'Key Pairs', compDelete = True)...``**  
+  **``self.KeyPairs = componentDef(compName = 'Key Pairs', compDelete = True)``**  
+  **``...``**
   
   List of AWS components that aws_cleanup.py script can inventory/delete, along with the flag compDelete that blocks components from being deleted.  
   Ex: To prevent all Key Pairs from being deleted, change KeyPair's compDelete from True to False (case sensitive!):  
