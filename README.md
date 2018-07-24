@@ -11,7 +11,7 @@
 - Route Tables
 
 ## Running aws_cleanup.py
-Both aws_cleanup.py AND aws_cleanup_ext.py files need to be in the same directory
+Both aws_cleanup.py AND aws_cleanup_import.py files need to be in the same directory
 - **INVENTORY OF AWS COMPONENTS (_no deletion_):**
   - **``# python3 aws_cleanup.py``**  
     Run without parameters, aws_cleanup.py displays an inventory of AWS components for all regions. The column "keep(Tag)" shows which AWS items have the tag key "keep". When "aws_cleanup.py --del" is run, items with “keep” tag key are not deleted.
@@ -28,7 +28,7 @@ Both aws_cleanup.py AND aws_cleanup_ext.py files need to be in the same director
 
 
 ## Advanced Settings:
-**The file aws_cleanup_ext.py contains script control settings that can be modified by the end-user.**
+**The file aws_cleanup_import.py contains script control settings that can be modified by the end-user.**
 - **``constantKeepTag = ['keep']``**  
   Python list of tag keys used to flag AWS items from being deleted.  Can have multiple case-insensitive entries.  
   Ex: to replace the default 'keep' flag with 'no_delete' and include tag key 'wfw' for blocking, change constantKeepTag to the following:  
