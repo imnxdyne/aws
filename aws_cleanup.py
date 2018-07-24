@@ -13,7 +13,7 @@
 #  2018.07.17 - ww - Added VPC, subnets, internet gateways, route tables. Added a couple
 #     dependency warnings.
 #  2018.07.23 - ww - Shifted variables that could be updated by end-user to external file
-#                    aws_cleanup_ext.py (could be convinced to place these variables back into
+#                    aws_cleanup_import.py (could be convinced to place these variables back into
 #                    this script). Corrected subnets order in deletion. Changed
 #                    argument storage from class to namedtuple.
 import sys
@@ -33,9 +33,9 @@ import textwrap
 from botocore.exceptions import ClientError,NoCredentialsError,EndpointConnectionError
 from collections import deque,defaultdict,namedtuple    # used for initializing nested dictionaries
 try:
-  from aws_cleanup_ext import constantKeepTag, componentDef, awsComponentClass, aws_cleanup_ext_ver
+  from aws_cleanup_import import constantKeepTag, componentDef, awsComponentClass, aws_cleanup_import_ver
 except ImportError:
-  print('ERROR: aws_cleanup_ext.py is missing. This file is required')
+  print('ERROR: aws_cleanup_import.py is missing. This file is required')
   exit(1)
 
 def signal_handler(sig, frame):
@@ -44,8 +44,8 @@ def signal_handler(sig, frame):
 signal.signal(signal.SIGINT, signal_handler)
 
 aws_cleanup_main_ver = 2.5
-if aws_cleanup_ext_ver != aws_cleanup_main_ver:
-  print('WARNING: incorrect version of aws_cleanup_ext.py file (version number is {0}; expected {1}).'.format(aws_cleanup_ext_ver, aws_cleanup_main_ver))
+if aws_cleanup_import_ver != aws_cleanup_main_ver:
+  print('WARNING: incorrect version of aws_cleanup_import.py file (version number is {0}; expected {1}).'.format(aws_cleanup_import_ver, aws_cleanup_main_ver))
   ign = input('Press enter to continue: ')
 
 #  Setting up a named tuple for consolidating all the arguments passed plus a location
