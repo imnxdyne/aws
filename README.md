@@ -44,8 +44,10 @@ Both aws_cleanup.py AND aws_cleanup_import.py files need to be in the same direc
   
   List of AWS components that aws_cleanup.py script can inventory/delete, along with the flag compDelete that blocks components from being deleted.  
   Fields:
-  - **compName**: AWS component Name
-  - **compDelete**: delete flag
+  - **compName**: AWS component Name; no need to change.
+  - **compDelete**: flag to block entire AWS component from being deleted. **True** to allow AWS component deletion, **False** to block deletion (case sensitive!).
   - **compKeep**: tuple list  
-  Ex: To prevent all Key Pairs from being deleted, change KeyPair's compDelete from True to False (case sensitive!):  
+  
+  Examples: 
+  - To prevent all Key Pairs from being deleted, change KeyPair's compDelete from True to False (case sensitive!):  
     ``self.KeyPairs = componentDef(compName = 'Key Pairs', ``**``compDelete = False)``**
