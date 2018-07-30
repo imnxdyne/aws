@@ -42,17 +42,17 @@ Both aws_cleanup.py AND aws_cleanup_import.py files need to be in the same direc
   **``self.Group = componentDef(compName = 'Group', compDelete = True, compKeep=())``**  
   **``...``**
   
-  List of AWS components that aws_cleanup.py script can inventory/delete, along with the flag compDelete that blocks components from being deleted.  
-  Fields:
+  List of AWS components that aws_cleanup.py script can inventory/delete  
+  Fields:  
   - **compName**: AWS component Name; no need to change.
   - **compDelete**: flag to block entire AWS component from being deleted. **True** to allow AWS component deletion, **False** to block deletion (case sensitive!).
-  - **compKeep**: In cases where AWS components don't have tags (key pairs, users, policies, etc), compKeep is a list of items not to delete. If compKeep has a single value, there needs to be a trailing comma in the list. Ex: compKeep=('scott',)
+  - **compKeep**: In cases where AWS components don't have tags (key pairs, users, policies, etc), compKeep is a list of items not to delete. If compKeep has a single value, there needs to be a trailing comma in the list. Ex: compKeep=('scott', )
   
   Examples: 
   - To prevent all Key Pairs from being deleted, change KeyPair's compDelete from True to False (case sensitive!):  
     ``self.KeyPairs = componentDef(compName = 'Key Pairs', ``**``compDelete = False``**``)``
-  - To prevent user scott from being deleted, change compKeep to the following:
-    ``self.KeyPairs = componentDef(compName = 'User', compDelete = False, ``**``compKeep = ('scott',)``**``)``
-  - To prevent user scott and bill from being deleted, change compKeep to the following:
-    ``self.KeyPairs = componentDef(compName = 'User', compDelete = False, ``**``compKeep = ('scott','bill')``**``)``
+  - To prevent user Ann from being deleted, change compKeep to the following (trailing comma is requred in the list!):
+    ``self.KeyPairs = componentDef(compName = 'User', compDelete = False, ``**``compKeep = ('ann',)``**``)``
+  - To prevent user Ann and Scott from being deleted, change compKeep to the following:
+    ``self.KeyPairs = componentDef(compName = 'User', compDelete = False, ``**``compKeep = ('ann','scott')``**``)``
 
