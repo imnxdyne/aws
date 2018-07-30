@@ -16,6 +16,8 @@
 #                    aws_cleanup_import.py (could be convinced to place these variables back into
 #                    this script). Corrected subnets order in deletion. Changed
 #                    argument storage from class to namedtuple.
+#  2018.07.30 - ww - Added user, group, policy, role AWS components.
+#                    Included check to block connected user from being deleted.
 import sys
 import os
 import re
@@ -88,6 +90,31 @@ def chkRouteAssociations(parRouteId, parScriptArg):
           subnetInfo = clientEC2Route.describe_subnets(Filters=[{'Name':'subnet-id', 'Values':[chkAssociations['SubnetId']]}])['Subnets'][0]
           routeTableSubnets.append(chkAssociations['SubnetId'] + tagNameFind(subnetInfo.get('Tags'), parScriptArg))
   return{'Main': routeTableIsMain, 'Subnets': routeTableSubnets}
+
+class dispItemsLineClass:
+  #  dispItemsLineClass - displays on a single line multiple item names
+  #    that are deleted, detached, or revoked from a single AWS item. This will
+  #    consolidate the output & provide info for possible debugging. For example,
+  #    would be used when removing groups from a single user - the 
+  #    output would look like
+  #      User "scott" - removing group(s): ops, sec, timecard, travel
+  #    Kept repeating this code; decided just to create a class for it.
+  def __init__(self, parMsgPrefix):
+    self.msg = parMsgPrefix
+    self.itemSeparator = ', '
+
+  def newItemName(self, parItemName):
+    retBld = self.msg + parItemName
+    self.msg = self.itemSeparator
+    return retBld
+
+  def EOL(self):
+    if self.msg == self.itemSeparator:
+      retVal = '\n'
+    else:
+      retVal = ''
+    self.msg = None
+    return retVal
 
 class regionBreakNewClass:
   def __init__(self):
@@ -287,6 +314,9 @@ print('AWS components in-scope for {}:'.format(sys.argv[0]))
 for id, idDetail in vars(awsComponent).items():
   if type(idDetail) is componentDef:
     print('  * {0} {1}'.format(idDetail.compName, ('' if idDetail.compDelete or aws_cleanupArg.inv else '\t*** DELETE DISABLED ***')))
+    if type(idDetail.compKeep) != type(tuple()):
+      print("ERROR: in aws_cleanup_import.py for self.{0}, compKeep is not defined as a tuple data type.\n\tIf compKeep is defined for a single value, it requires a trailing comma within the parentheses.\n\tThe following are acceptable values:\n\t\tcompKeep=('KeepMe',)\n\t\tcompKeep=('KeepMe', 'EC2AlsoKeep')\n\t\tcompKeep=('KeepMe', 'EC2AlsoKeep',)".format(idDetail.compName))
+      exit(12)
     if not (aws_cleanupArg.inv or idDetail.compDelete):
       noDeleteList.append(idDetail.compName)
 if aws_cleanupArg.keepTag:
@@ -317,6 +347,15 @@ if args.test_region:
   regions=['us-west-1','us-west-2','us-east-1','us-east-2']  #for testing#
   print('Reduced regions for script testing: ', regions, '\n\n')
 
+resourceIAM = boto3.resource('iam')
+clientIAM = boto3.client('iam')
+currentUserArn = resourceIAM.CurrentUser().arn
+currentAccountId = resourceIAM.CurrentUser().arn.split(':')[-2]
+currentAlias = ""
+for getAlias in clientIAM.list_account_aliases()['AccountAliases']:
+  currentAlias = getAlias
+print('AWS Account ID/Alias:\t{0}{1}'.format(currentAccountId, formatDispName(currentAlias)))
+print('Connected User:\t\t{0}'.format(re.sub('^.+/', '', currentUserArn.split(':')[-1])))
 
 #  targetTag is the regex pattern used to identify what needs to be listed in the inventory
 #  and possibly terminated. targetTag is used in searching the AWS component
@@ -387,18 +426,22 @@ for currentRegion in sorted(regions):
         termTrack[awsComponent.Volume][currentRegion][vol['VolumeId']] = {'DISPLAY_ID': vol['VolumeId'] + formatDispName(tagData.nameTag)}
 
   #################################################################
-  #  Key Pairs
+  #  Key Pairs WAYE
   #################################################################
   if 'secKeyPairsRpt' not in globals():
-    secKeyPairsRpt = awsRpt(*[["Region", 16],["KeyName", 30]])
+    secKeyPairsRpt = awsRpt(*[["Region", 16],["KeyName", 30],["Keep"]])
   if aws_cleanupArg.inv or awsComponent.KeyPairs.compDelete:
     # Skipping key pairs if deleting by tags (as they have no tags)
     if not aws_cleanupArg.del_tag:
       for resp in clientEC2Region.describe_key_pairs()['KeyPairs']:
+        chkCompKeep = ""
+        for compKeep in awsComponent.KeyPairs.compKeep:
+          if re.search('^'+re.escape(compKeep)+'$', resp['KeyName'], re.IGNORECASE):
+            chkCompKeep = "Yes"
         if aws_cleanupArg.inv:
-          secKeyPairsRpt.addLine(regionBreakKeyPairs.lineBreak(currentRegion), currentRegion, resp['KeyName'])
-        else:
-          secKeyPairsRpt.addLine(regionBreakKeyPairs.lineBreak(currentRegion), currentRegion, resp['KeyName'])
+          secKeyPairsRpt.addLine(regionBreakKeyPairs.lineBreak(currentRegion), currentRegion, resp['KeyName'], chkCompKeep)
+        elif not chkCompKeep:
+          secKeyPairsRpt.addLine(regionBreakKeyPairs.lineBreak(currentRegion), currentRegion, resp['KeyName'], chkCompKeep)
           if not termTrack[awsComponent.KeyPairs][currentRegion]:
             termTrack[awsComponent.KeyPairs][currentRegion] = [resp['KeyName']]
           else:
@@ -525,14 +568,114 @@ if aws_cleanupArg.inv or awsComponent.S3.compDelete:
         termTrack[awsComponent.S3].append(buckets['Name'])
 if s3Rpt.rows > 0:
   output += '\nS3 Buckets{}:\n'.format(targetTagTitleInfo)
-  output += s3Rpt.result()
+  output += s3Rpt.result() + "\n" * 2
 
+#################################################################
+#  Users 
+#################################################################
+currentUserArnDel = False
+userRpt = awsRpt(*[["User Name", 20], ["ARN", 50], ["Keep"]])
+if aws_cleanupArg.inv or awsComponent.User.compDelete:
+  for user in clientIAM.list_users()['Users']:
+    chkCompKeep = ""
+    for compKeep in awsComponent.User.compKeep:
+      if re.search('^'+re.escape(compKeep)+'$', user['UserName'], re.IGNORECASE):
+       chkCompKeep = "Yes"
+    if aws_cleanupArg.inv:
+      userRpt.addLine(False, user['UserName'], user['Arn'],chkCompKeep)
+    elif aws_cleanupArg.del_all and not chkCompKeep:
+      userRpt.addLine(False, user['UserName'], user['Arn'],chkCompKeep)
+      # Safety feature - don't let the current connected user be deleted.
+      if currentUserArn == user['Arn']:
+        currentUserArnDel  = True
+      else:
+        termTrack[awsComponent.User][user['UserName']] = {'DISPLAY_ID': user['Arn']}
+if userRpt.rows > 0:
+  output += '\nUsers:\n'
+  output += userRpt.result() + "\n" * 2
+
+    
+#################################################################
+#  Groups 
+#################################################################
+groupRpt = awsRpt(*[["Group Name", 40], ["Keep"]])
+if aws_cleanupArg.inv or awsComponent.Group.compDelete:
+  for group in clientIAM.list_groups()['Groups']:
+    chkCompKeep = ""
+    for compKeep in awsComponent.Group.compKeep:
+      if re.search('^'+re.escape(compKeep)+'$',group['GroupName'], re.IGNORECASE):
+       chkCompKeep = "Yes"
+    if aws_cleanupArg.inv:
+      groupRpt.addLine(False, group['GroupName'],chkCompKeep)
+    elif aws_cleanupArg.del_all and not chkCompKeep:
+      groupRpt.addLine(False, group['GroupName'],chkCompKeep)
+      if not termTrack[awsComponent.Group]:
+        termTrack[awsComponent.Group] = [group['GroupName']]
+      else:
+        termTrack[awsComponent.Group].append(group['GroupName'])
+if groupRpt.rows > 0:
+  output += '\nGroups:\n'
+  output += groupRpt.result() + "\n" * 2
+
+#################################################################
+#  Policies 
+#################################################################
+policyRpt = awsRpt(*[["Policy Name", 70], ["Description", 40], ["Keep"]])
+if aws_cleanupArg.inv or awsComponent.Policy.compDelete:
+  for policy in clientIAM.list_policies(Scope='Local')['Policies']:
+    chkCompKeep = ""
+    for compKeep in awsComponent.Policy.compKeep:
+      if re.search('^'+re.escape(compKeep)+'$',policy['PolicyName'], re.IGNORECASE):
+       chkCompKeep = "Yes"
+    policyDescription = policy.get('Description')
+    if policyDescription is None:
+      policyDescription = ''
+    if aws_cleanupArg.inv:
+      policyRpt.addLine(False, policy['PolicyName'],policyDescription, chkCompKeep)
+    elif aws_cleanupArg.del_all and not chkCompKeep:
+      policyRpt.addLine(False, policy['PolicyName'],policyDescription, chkCompKeep)
+      termTrack[awsComponent.Policy][policy['Arn']] = {'DISPLAY_ID': policy['PolicyName']}
+if policyRpt.rows > 0:
+  output += '\nPolicies:\n'
+  output += policyRpt.result() + "\n" * 2
+
+#################################################################
+#  Roles
+#################################################################
+roleRpt = awsRpt(*[["Role Name", 40], ["Keep"]])
+if aws_cleanupArg.inv or awsComponent.Role.compDelete:
+  for role in clientIAM.list_roles()['Roles']:
+    chkCompKeep = ""
+    for compKeep in awsComponent.Role.compKeep:
+      if re.search('^'+re.escape(compKeep)+'$',role['RoleName'], re.IGNORECASE):
+       chkCompKeep = "Yes"
+    if aws_cleanupArg.inv:
+      roleRpt.addLine(False, role['RoleName'],chkCompKeep)
+    elif aws_cleanupArg.del_all and not chkCompKeep:
+      roleRpt.addLine(False, role['RoleName'],chkCompKeep)
+      if not termTrack[awsComponent.Role]:
+        termTrack[awsComponent.Role] = [role['RoleName']]
+      else:
+        termTrack[awsComponent.Role].append(role['RoleName'])
+if roleRpt.rows > 0:
+  output += '\nRoles:\n'
+  output += roleRpt.result() + "\n" * 2
 
 
 print(output)
 print("\n")
 if not aws_cleanupArg.inv:
+
+  if currentUserArnDel:
+    currentUserArnDelMsg = '\n' + '*' * 100 + '\n'
+    currentUserArnDelMsg += 'ERROR: Your connected username "{0}" (from  ~/.aws/credentials) is targeted for deletion.'.format(re.sub('^.+/', '', currentUserArn.split(':')[-1])) + '\n'
+    currentUserArnDelMsg += '\taws_cleanup.py will bypass deleting account {0}, but no guarantees on groups and/or\n\tpolicies granted to {0} being deleted & {0} loosing authorization.\n\n\tYou can configure "{1}" to be excluded from deletion\n\tin aws_cleanup_import.py, or re-configure ~/.aws/credentials for the root account.'.format(re.sub('^.+/', '', currentUserArn.split(':')[-1]), currentUserArn) + "\n"
+    currentUserArnDelMsg += '*' * 100 + "\n"
+
+
   if not termTrack:
+    if currentUserArnDel:
+      print(currentUserArnDelMsg)
     print("No AWS items were found that were in-scope for terminating/deleting")
     if aws_cleanupArg.del_tag:
       print('Search tag: "{}"'.format('", "'.join(aws_cleanupArg.targetTag)))
@@ -544,6 +687,13 @@ if not aws_cleanupArg.inv:
       print('Deleting items with the tag(s): "' + '", "'.join(aws_cleanupArg.targetTag) + '"')
     if noDeleteList:
       print('REMEMBER - DELETION/TERMINATION HAS BEEN DISABLED FOR THE FOLLOWING AWS COMPONENTS:\n\t{}'.format('\n\t'.join(noDeleteList)))
+    if currentUserArn.split(':')[-1] != "root" and not currentUserArnDel:
+      print("WARNING: while ~/.aws/credentials (username {0}) is out of scope for deletion,".format(re.sub('^.+/', '', currentUserArn.split(':')[-1])))
+      print("         you are responsible for verifing the groups and policies for account {0}".format(re.sub('^.+/', '', currentUserArn.split(':')[-1])))
+      print("         remain intact for future authorizations.")
+    if currentUserArnDel:
+      print(currentUserArnDelMsg)
+      ign = input("Proceed at your own risk - press enter to continue: ")
     #  Having the user type in something more that just "yes" to confirm they really
     #  want to terminate/delete AWS item(s).
     verifyDelCode = str(random.randint(0, 9999)).zfill(4)
@@ -761,6 +911,185 @@ if not aws_cleanupArg.inv:
             ign = s3.Bucket(bucketName).delete()
           except ClientError as e:
             print("   ERROR:", e, '\n')
-        
+
+      #################################################################
+      #  User delete 
+      #################################################################
+      if awsComponent.User in termTrack:
+        for id, idDetail in termTrack[awsComponent.User].items():
+          #  Before a user can be deleted, need to delete the access key and login profile.
+          #  Remove access key from user (if it exists)
+          dispItemsLine = dispItemsLineClass('User "{0}" ({1}) - deleting access key(s): '.format(id, idDetail['DISPLAY_ID']))
+          for scanPrepDel in clientIAM.list_access_keys(UserName=id)['AccessKeyMetadata']:
+            try:
+              print(dispItemsLine.newItemName(scanPrepDel.get('AccessKeyId')), end = '')
+              ign = clientIAM.delete_access_key(UserName = id, AccessKeyId = scanPrepDel.get('AccessKeyId'))
+            except ClientError as e:
+              print("   ERROR:", e, '\n')
+          print("", end = dispItemsLine.EOL())
+
+          #  Remove login profile from user (if it exists)
+          try:
+            ign = clientIAM.get_login_profile(UserName = id)
+            print('User "{0}" ({1}) - deleting login profile'.format(id, idDetail['DISPLAY_ID']))
+            ign = clientIAM.delete_login_profile(UserName = id)
+          except ClientError as e:
+            if e.response['Error']['Code'] == 'NoSuchEntity':
+              pass
+            else:
+              print("   ERROR:", e, '\n')
+
+          #  Remove any groups granted to the user (required before deleting user)
+          dispItemsLine = dispItemsLineClass('User "{0}" ({1}) - removing group(s): '.format(id, idDetail['DISPLAY_ID']))
+          for scanPrepDel in clientIAM.list_groups_for_user(UserName=id)['Groups']:
+            try:
+              print(dispItemsLine.newItemName(scanPrepDel.get('GroupName')), end = '')
+              ign = clientIAM.remove_user_from_group(GroupName = scanPrepDel.get('GroupName'), UserName=id)
+            except ClientError as e:
+              print("\n   ERROR:", e, '\n')
+          print("", end = dispItemsLine.EOL())
+
+          #  Remove any policies directly granted to the user (required before deleting user)
+          dispItemsLine = dispItemsLineClass('User "{0}" ({1}) - detaching policies: '.format(id, idDetail['DISPLAY_ID']))
+          for scanPrepDel in clientIAM.list_attached_user_policies(UserName=id)['AttachedPolicies']:
+            try:
+              print(dispItemsLine.newItemName(scanPrepDel.get('PolicyName')), end = '')
+              ign = clientIAM.detach_user_policy(UserName=id, PolicyArn=scanPrepDel.get('PolicyArn'))
+            except ClientError as e:
+              print("\n   ERROR:", e, '\n')
+          print("", end = dispItemsLine.EOL())
+
+          print('User "{0}" ({1}) - dropping account'.format(id, idDetail['DISPLAY_ID']))
+          try:
+            ign = clientIAM.delete_user(UserName=id)
+          except ClientError as e:
+            print("   ERROR:", e, '\n')
+
+      #################################################################
+      #  Group delete 
+      #################################################################
+      if awsComponent.Group in termTrack:
+        for id in termTrack[awsComponent.Group]:
+          dispItemsLine = dispItemsLineClass('Group "{0}" - detaching users: '.format(id))
+          for scanPrepDel in clientIAM.get_group(GroupName=id)['Users']:
+            try:
+              print(dispItemsLine.newItemName(scanPrepDel.get('UserName')), end = '')
+              ign = clientIAM.remove_user_from_group(GroupName = id, UserName=scanPrepDel.get('UserName'))
+            except ClientError as e:
+              print("\n   ERROR:", e, '\n')
+          print("", end = dispItemsLine.EOL())
+
+          dispItemsLine = dispItemsLineClass('Group "{0}" - detaching policies: '.format(id))
+          for scanPrepDel in clientIAM.list_attached_group_policies(GroupName=id)['AttachedPolicies']:
+            try:
+              print(dispItemsLine.newItemName(scanPrepDel.get('PolicyName')), end = '')
+              ign = clientIAM.detach_group_policy(GroupName = id, PolicyArn=scanPrepDel.get('PolicyArn'))
+            except ClientError as e:
+              print("\n   ERROR:", e, '\n')
+          print("", end = dispItemsLine.EOL())
+
+          dispItemsLine = dispItemsLineClass('Group "{0}" - deleting inline policies: '.format(id))
+          for scanPrepDel in clientIAM.list_group_policies(GroupName=id)['PolicyNames']:
+            try:
+              print(dispItemsLine.newItemName(scanPrepDel), end = '')
+              ign = clientIAM.delete_group_policy(GroupName = id, PolicyName = scanPrepDel)
+            except ClientError as e:
+              print("\n   ERROR:", e, '\n')
+          print("", end = dispItemsLine.EOL())
+
+
+          try:
+            print('Group "{0}" - deleting'.format(id))
+            ign = clientIAM.delete_group(GroupName=id)
+          except ClientError as e:
+            print("   ERROR:", e, '\n')
+            
+      #################################################################
+      #  Policy delete
+      #################################################################
+      if awsComponent.Policy in termTrack:
+        for id, idDetail in termTrack[awsComponent.Policy].items():
+          dispItemsLine = dispItemsLineClass('Policy "{0}" - detaching groups: '.format(idDetail['DISPLAY_ID']))
+          for scanPrepDel in clientIAM.list_entities_for_policy(PolicyArn=id)['PolicyGroups']:
+            try:
+              print(dispItemsLine.newItemName(scanPrepDel.get('GroupName')), end = '')
+              ign = clientIAM.detach_group_policy(GroupName = scanPrepDel.get('GroupName'), PolicyArn = id)
+            except ClientError as e:
+              print("\n   ERROR:", e, '\n')
+          print("", end = dispItemsLine.EOL())
+
+          dispItemsLine = dispItemsLineClass('Policy "{0}" - detaching users: '.format(idDetail['DISPLAY_ID']))
+          for scanPrepDel in clientIAM.list_entities_for_policy(PolicyArn=id)['PolicyUsers']:
+            try:
+              print(dispItemsLine.newItemName(scanPrepDel.get('UserName')), end = '')
+              ign = clientIAM.detach_user_policy(UserName = scanPrepDel.get('UserName'), PolicyArn = id)
+            except ClientError as e:
+              print("\n   ERROR:", e, '\n')
+          print("", end = dispItemsLine.EOL())
+
+          dispItemsLine = dispItemsLineClass('Policy "{0}" - detaching roles: '.format(idDetail['DISPLAY_ID']))
+          for scanPrepDel in clientIAM.list_entities_for_policy(PolicyArn=id)['PolicyRoles']:
+            try:
+              print(dispItemsLine.newItemName(scanPrepDel.get('RoleName')), end = '')
+              ign = clientIAM.detach_role_policy(RoleName = scanPrepDel.get('RoleName'), PolicyArn = id)
+            except ClientError as e:
+              print("\n   ERROR:", e, '\n')
+          print("", end = dispItemsLine.EOL())
+
+          dispItemsLine = dispItemsLineClass('Policy "{0}" - deleting non-default versions: '.format(idDetail['DISPLAY_ID']))
+          for scanPrepDel in clientIAM.list_policy_versions(PolicyArn=id)['Versions']:
+            if not scanPrepDel['IsDefaultVersion']:
+              try:
+                print(dispItemsLine.newItemName(scanPrepDel.get('VersionId')), end = '')
+                ign = clientIAM.delete_policy_version(VersionId = scanPrepDel.get('VersionId'), PolicyArn = id)
+              except ClientError as e:
+                print("\n   ERROR:", e, '\n')
+          print("", end = dispItemsLine.EOL())
+          
+          try:
+            print('Policy "{0}" - deleting'.format(idDetail['DISPLAY_ID']))
+            ign = clientIAM.delete_policy(PolicyArn = id)
+          except ClientError as e:
+            print("   ERROR:", e, '\n')
+
+      #################################################################
+      #  Roles  delete
+      #################################################################
+      if awsComponent.Role in termTrack:
+        for id in termTrack[awsComponent.Role]:
+          dispItemsLine = dispItemsLineClass('Role "{0}" - detaching policies: '.format(id))
+          for scanPrepDel in clientIAM.list_attached_role_policies(RoleName=id)['AttachedPolicies']:
+            try:
+              print(dispItemsLine.newItemName(scanPrepDel.get('PolicyName')), end = '')
+              ign = clientIAM.detach_role_policy(RoleName = id, PolicyArn=scanPrepDel.get('PolicyArn'))
+            except ClientError as e:
+              print("\n   ERROR:", e, '\n')
+          print("", end = dispItemsLine.EOL())
+
+          dispItemsLine = dispItemsLineClass('Role "{0}" - deleting inline policies: '.format(id))
+          for scanPrepDel in clientIAM.list_role_policies(RoleName=id)['PolicyNames']:
+            try:
+              print(dispItemsLine.newItemName(scanPrepDel), end = '')
+              ign = clientIAM.delete_role_policy(RoleName = id, PolicyName=scanPrepDel)
+            except ClientError as e:
+              print("\n   ERROR:", e, '\n')
+          print("", end = dispItemsLine.EOL())
+
+          dispItemsLine = dispItemsLineClass('Role "{0}" - removing instance profile(s): '.format(id))
+          for scanPrepDel in clientIAM.list_instance_profiles_for_role(RoleName=id)['InstanceProfiles']:
+            try:
+              print(dispItemsLine.newItemName(scanPrepDel.get('InstanceProfileName')), end = '')
+              ign = clientIAM.remove_role_from_instance_profile(RoleName = id, InstanceProfileName=scanPrepDel.get('InstanceProfileName'))
+            except ClientError as e:
+              print("\n   ERROR:", e, '\n')
+          print("", end = dispItemsLine.EOL())
+
+          # remove_role_from_instance_profile
+          try:
+            print('Role "{0}" - deleting'.format(id))
+            ign = clientIAM.delete_role(RoleName = id)
+          except ClientError as e:
+            print("   ERROR:", e, '\n')
+
     else:
       print('Invalid Verification Code entered. Exiting script WITHOUT terminating/deleting AWS components')
