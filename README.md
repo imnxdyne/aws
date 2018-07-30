@@ -50,7 +50,9 @@ Both aws_cleanup.py AND aws_cleanup_import.py files need to be in the same direc
   
   Examples: 
   - To prevent all Key Pairs from being deleted, change KeyPair's compDelete from True to False (case sensitive!):  
-    ``self.KeyPairs = componentDef(compName = 'Key Pairs', ``**``compDelete = False``**)``
+    ``self.KeyPairs = componentDef(compName = 'Key Pairs', ``**``compDelete = False``**``)``
   - To prevent user scott from being deleted, change compKeep to the following:
-    ``self.KeyPairs = componentDef(compName = 'User', compDelete = False, ``**``compKeep = ('scott',)``**)``
+    ``self.KeyPairs = componentDef(compName = 'User', compDelete = False, ``**``compKeep = ('scott',)``**``)``
+  - To prevent user scott and bill from being deleted, change compKeep to the following:
+    ``self.KeyPairs = componentDef(compName = 'User', compDelete = False, ``**``compKeep = ('scott','bill')``**``)``
 
