@@ -18,6 +18,7 @@
 #                    argument storage from class to namedtuple.
 #  2018.07.30 - ww - Added user, group, policy, role AWS components.
 #                    Included check to block connected user from being deleted.
+#                    Added handling to bypass deleting "AWSServiceRoleForSupport".
 import sys
 import os
 import re
@@ -642,7 +643,7 @@ if policyRpt.rows > 0:
 #################################################################
 #  Roles
 #################################################################
-roleRpt = awsRpt(*[["Role Name", 40], ["Keep"]])
+roleRpt = awsRpt(*[["Role Name", 60], ["Keep"]])
 if aws_cleanupArg.inv or awsComponent.Role.compDelete:
   for role in clientIAM.list_roles()['Roles']:
     chkCompKeep = ""
@@ -652,11 +653,15 @@ if aws_cleanupArg.inv or awsComponent.Role.compDelete:
     if aws_cleanupArg.inv:
       roleRpt.addLine(False, role['RoleName'],chkCompKeep)
     elif aws_cleanupArg.del_all and not chkCompKeep:
-      roleRpt.addLine(False, role['RoleName'],chkCompKeep)
-      if not termTrack[awsComponent.Role]:
-        termTrack[awsComponent.Role] = [role['RoleName']]
+      if role['RoleName'] == 'AWSServiceRoleForSupport':
+        #  Special handing for role AWSServiceRoleForSupport - this cannot be deleted.
+        roleRpt.addLine(False, '{0} - this service-linked role cannot be deleted. Review AWS support docs for details'.format(role['RoleName']),"Yes")
       else:
-        termTrack[awsComponent.Role].append(role['RoleName'])
+        roleRpt.addLine(False, role['RoleName'],chkCompKeep)
+        if not termTrack[awsComponent.Role]:
+          termTrack[awsComponent.Role] = [role['RoleName']]
+        else:
+          termTrack[awsComponent.Role].append(role['RoleName'])
 if roleRpt.rows > 0:
   output += '\nRoles:\n'
   output += roleRpt.result() + "\n" * 2
