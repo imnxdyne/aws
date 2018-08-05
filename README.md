@@ -4,11 +4,17 @@
 - Security Groups 
 - Volumes 
 - Key Pairs 
+- Alarms 
 - S3 Buckets 
 - VPC 
 - Subnets 
 - Internet Gateways 
-- Route Tables
+- Route Tables 
+- VPC Endpoints 
+- User 
+- Group 
+- Policy 
+- Role
 
 ## Running aws_cleanup.py
 Both aws_cleanup.py AND aws_cleanup_import.py files need to be in the same directory
@@ -22,9 +28,12 @@ Both aws_cleanup.py AND aws_cleanup_import.py files need to be in the same direc
  
 - **DELETING AWS COMPONENTS:**
   - **``# python3 aws_cleanup.py --del``**  
-    Deletes all AWS components except for items with the "keep" tag. The script will first show an inventory of which AWS items will be terminated/deleted, followed by a confirmation prompt.
+    Deletes all AWS components except for items with the "keep" tag and default VPCs. The script will first show an inventory of which AWS items will be terminated/deleted, followed by a confirmation prompt.
   - **``# python3 aws_cleanup.py --del --tag <tag_keys>``**   
     Deletes only AWS items having tag keys of _<tag_keys>_. Any AWS item with "keep" tag key will be excluded from removal. Script first displays an inventory of which AWS items will be removed, followed by a confirmation prompt. Having no tags, Key Pairs are out of scope.  
+  - **``# python3 aws_cleanup.py --del --vpc_rebuild``**   
+    Deletes all AWS components except for items with the "keep" tag AND deletes/recreates all default VPCs. The script will first show an inventory of which AWS items will be terminated/deleted, followed by a confirmation prompt.
+  
 
 
 ## Advanced Settings:
