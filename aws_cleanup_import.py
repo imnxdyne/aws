@@ -4,7 +4,7 @@
 from collections import deque,defaultdict,namedtuple  
 
 #  aws_cleanup_import_ver needs to match version number in aws_cleanup.py
-aws_cleanup_import_ver = 2.5
+aws_cleanup_import_ver = 2.6
 
 #  Can enabled multiple "keep" tags.
 constantKeepTag = ['keep']
@@ -25,15 +25,17 @@ class awsComponentClass:
     self.SecGroup = componentDef(compName = 'Security Groups', compDelete = True)
     self.Volume = componentDef(compName = 'Volumes', compDelete = True)
     self.KeyPairs = componentDef(compName = 'Key Pairs', compDelete = True, compKeep=('EC2 Keep',))
+    self.Alarm = componentDef(compName = 'Alarm', compDelete = True, compKeep=())
     self.S3 = componentDef(compName = 'S3 Buckets', compDelete = True)
-    self.VPC = componentDef(compName = 'VPC', compDelete = True)
-    self.Subnet = componentDef(compName = 'Subnets', compDelete = True)
+    self.VPC = componentDef(compName = 'VPC (non-default)', compDelete = True)
+    self.Subnet = componentDef(compName = 'Subnets (non-default)', compDelete = True)
     self.InternetGateway = componentDef(compName = 'Internet Gateways', compDelete = True)
     self.RouteTable = componentDef(compName = 'Route Tables', compDelete = True)
+    self.Endpoint = componentDef(compName = 'VPC Endpoints', compDelete = True, compKeep=()) #compKeep=('vpce-....',) - list of Endpoint IDs
     #  User compKeep is a list of users not to delete. If only one value, a trailing comma is
     #    required - compKeep('scott',). Case-insensitive.
     #  Same applies to Group, Poilicy, and Role.
-    self.User = componentDef(compName = 'User', compDelete = True, compKeep=())
-    self.Group = componentDef(compName = 'Group', compDelete = True, compKeep=())
+    self.User = componentDef(compName = 'User', compDelete = True, compKeep=()) #compKeep=('Username1','Username2',...) 
+    self.Group = componentDef(compName = 'Group', compDelete = True, compKeep=())  #compKeep=('GroupName1', 'GroupName2', ...)
     self.Policy = componentDef(compName = 'Policy', compDelete = True, compKeep=())
     self.Role = componentDef(compName = 'Role', compDelete = True, compKeep=())
