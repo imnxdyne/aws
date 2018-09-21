@@ -26,14 +26,14 @@
 Both aws_cleanup.py AND aws_cleanup_import.py files need to be in the same directory
 - **INVENTORY OF AWS COMPONENTS (_no deletion_):**
   - **``# python3 aws_cleanup.py``**  
-    Run without parameters, aws_cleanup.py displays an inventory of AWS components for all regions. The column "keep(Tag)" shows which AWS items have the tag key "keep". When "aws_cleanup.py --del" is run, items with “keep” tag key are not deleted.
+    Run without parameters, aws_cleanup.py displays an inventory of AWS components for all regions. The column "keep(Tag)" shows which AWS items have the tag key "keep". The column "keep" is for AWS components that don't have tag keys and are identified in the aws_cleanup_import.py file (see Advanced Settings below). When "aws_cleanup.py --del" is run, items identified as "keep" are not deleted.
 
   
 - **DELETING AWS COMPONENTS:**
   - **``# python3 aws_cleanup.py --del``**  
-    Deletes all AWS components except for items with the "keep" tag AND Default VPCs. The script will first show an inventory of which AWS items will be terminated/deleted, followed by a confirmation prompt.
+    Deletes all AWS components except for items identified as "keep" and Default VPCs. The script will first show an inventory of which AWS items will be terminated/deleted, followed by a confirmation prompt.
   - **``# python3 aws_cleanup.py --del --vpc_rebuild``**   
-    Deletes all AWS components except for items with the "keep" tag AND deletes/recreates all Default VPCs. The recreated Default VPCs will be the same configuration as new AWS setup. The script will first list an inventory of which AWS items will be terminated/deleted, followed by a confirmation prompt.
+    Deletes all AWS components except for items with the "keep" tag and deletes/recreates all Default VPCs. The recreated Default VPCs will be the same configuration as new AWS setup. The script will first list an inventory of which AWS items will be terminated/deleted, followed by a confirmation prompt.
   
 
 
@@ -56,7 +56,7 @@ Both aws_cleanup.py AND aws_cleanup_import.py files need to be in the same direc
   Fields:  
   - **compName**: AWS component Name; no need to change.
   - **compDelete**: flag to block entire AWS component from being deleted. **True** to allow AWS component deletion, **False** to block deletion (case sensitive!).
-  - **itemsKeep**: where AWS components don't have tags (key pairs, users, policies, etc), itemsKeep is a list of item names not to delete. **If itemsKeep has a single value, there needs to be a trailing comma after the value**. Ex: itemsKeep=('scott', )
+  - **itemsKeep**: where AWS components don't have tags (key pairs, users, policies, etc), itemsKeep is a quoted list of item names not to delete. Ex: itemsKeep=('Seattle', 'Redmond')
   
   Examples: 
   - To prevent all Key Pairs from being deleted, change KeyPair's compDelete from True to False (case sensitive!):  
