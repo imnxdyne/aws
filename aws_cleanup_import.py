@@ -1,41 +1,58 @@
 # aws_cleanup_import.py
 #   Consolidated location for "global vars" that may be modified by end-user.
-#   2.5: baseline
 from collections import deque,defaultdict,namedtuple  
 
 #  aws_cleanup_import_ver needs to match version number in aws_cleanup.py
-aws_cleanup_import_ver = 2.6
+aws_cleanup_import_ver = 2.8
 
 #  Can enabled multiple "keep" tags.
 constantKeepTag = ['keep']
 
-componentDef = namedtuple("componentDef", ['compName', 'compDelete', 'compKeep'])
+componentDef = namedtuple("componentDef", ['compName', 'compDelete', 'itemsKeep'])
 componentDef.__new__.__defaults__ = (None, None, ())
 class awsComponentClass:
   def __init__(self):
-    #  compName - utilized for the following:
+    #  compName - used for script (no need to change):
     #    1) Unique dictionary index for termTrackClass attribute "x"
     #    2) Title / display name
-    #  compDelete: flag to disable AWS component from being deleted, but will still
-    #       display inventory. Used for testing or keeping AWS components
-    #  compKeep: for aws items that don't have tags, compKeep list names
-    #       of AWS items to block from being deleted. NOTE: this a tuple value -
-    #       if there's ony one value, have a trailing comma (ex: compKeep=('EC2 Key Value',) )
-    self.EC2 = componentDef(compName = 'EC2 instances', compDelete = True)
-    self.SecGroup = componentDef(compName = 'Security Groups', compDelete = True)
-    self.Volume = componentDef(compName = 'Volumes', compDelete = True)
-    self.KeyPairs = componentDef(compName = 'Key Pairs', compDelete = True, compKeep=('EC2 Keep',))
-    self.Alarm = componentDef(compName = 'Alarm', compDelete = True, compKeep=())
-    self.S3 = componentDef(compName = 'S3 Buckets', compDelete = True)
-    self.VPC = componentDef(compName = 'VPC (non-default)', compDelete = True)
-    self.Subnet = componentDef(compName = 'Subnets (non-default)', compDelete = True)
-    self.InternetGateway = componentDef(compName = 'Internet Gateways', compDelete = True)
-    self.RouteTable = componentDef(compName = 'Route Tables', compDelete = True)
-    self.Endpoint = componentDef(compName = 'VPC Endpoints', compDelete = True, compKeep=()) #compKeep=('vpce-....',) - list of Endpoint IDs
-    #  User compKeep is a list of users not to delete. If only one value, a trailing comma is
-    #    required - compKeep('scott',). Case-insensitive.
-    #  Same applies to Group, Poilicy, and Role.
-    self.User = componentDef(compName = 'User', compDelete = True, compKeep=()) #compKeep=('Username1','Username2',...) 
-    self.Group = componentDef(compName = 'Group', compDelete = True, compKeep=())  #compKeep=('GroupName1', 'GroupName2', ...)
-    self.Policy = componentDef(compName = 'Policy', compDelete = True, compKeep=())
-    self.Role = componentDef(compName = 'Role', compDelete = True, compKeep=())
+    #
+    #  compDelete: disables deletion of AWS component (inventory will still be displayed).
+    #     "compDelete = True": delete AWS component
+    #     "compDelete = False": don't delete AWS component
+    #     Examples:
+    #       >>> Block aws_cleanup.py from deleting AWS user accounts (compDelete = False):
+    #         self.User = componentDef(compName='User', compDelete = False, itemsKeep=())
+    #       >>> AWS user accounts are in-scope for deletion by aws_cleanup.py script (compDelete = True):
+    #         self.User = componentDef(compName='User', compDelete = True, itemsKeep=())
+    #
+    #    itemsKeep: list of AWS item names to exclude from deletion. Targeted for AWS components that don't
+    #         have tags (no "keep" tag). Item list are case-insensetive, quoted, and separated by commas:
+    #     Example:
+    #       >>> Block AWS key pairs with the names 'ABC' or 'XYZ' from being deleted:
+    #         self.KeyPairs = componentDef(compName = 'Key Pairs', compDelete = True, itemsKeep=('ABC', 'xyz'))
+    #       >>> Block user 'Scott' from being deleted:
+    #         self.User = componentDef(compName = 'User', compDelete = True, itemsKeep=('Scott'))
+
+    self.EC2 = componentDef(compName = 'EC2 Instances', compDelete=True)
+    self.SecurityGroups = componentDef(compName = 'Security Groups', compDelete=True)
+    #  NOTE: Changing compDelete = False for Volumes will not have any affect on volumes attached
+    #        to an EC2 instance. When the EC2 instance is deleted, the volume will automatically be dropped.
+    self.Volumes = componentDef(compName = 'Volumes', compDelete=True)
+    self.KeyPairs = componentDef(compName = 'Key Pairs', compDelete=True, itemsKeep=())
+    self.MetricAlarms = componentDef(compName = 'Metric Alarms', compDelete=True, itemsKeep=(None))
+    self.ConfigRules = componentDef(compName = 'Config Rules', compDelete=True, itemsKeep=())
+    self.ConfigurationRecorders = componentDef(compName = 'Configuration Recorder', compDelete=True, itemsKeep=())
+    self.CloudTrail = componentDef(compName = 'Cloud Trail', compDelete=True, itemsKeep=())
+    self.CloudWatchLogGroups = componentDef(compName = 'Cloud Watch Log Group', compDelete=True, itemsKeep=())
+    self.SNSTopics = componentDef(compName = 'SNS Topic', compDelete=True, itemsKeep=())
+    self.S3 = componentDef(compName = 'S3 Buckets', compDelete=True)
+    self.VPC = componentDef(compName = 'VPC', compDelete=True)
+    self.Subnets = componentDef(compName = 'Subnets (non-default)', compDelete=True)
+    self.InternetGateways = componentDef(compName = 'Internet Gateways', compDelete=True)
+    self.RouteTables = componentDef(compName = 'Route Tables', compDelete=True)
+    self.VPCEndpoints = componentDef(compName = 'VPC Endpoints', compDelete=True, itemsKeep=()) 	#itemsKeep=('vpce-....') - list of Endpoint IDs
+    self.Users = componentDef(compName = 'User', compDelete=True, itemsKeep=()) 	#itemsKeep=('Username1','Username2',...) 
+    self.Groups = componentDef(compName = 'Group', compDelete=True, itemsKeep=()) 	#itemsKeep=('GroupName1', 'GroupName2', ...)
+    self.Policies = componentDef(compName = 'Policy', compDelete=True, itemsKeep=())
+    self.Roles = componentDef(compName = 'Role', compDelete=True, itemsKeep=())
+    self.InstanceProfiles = componentDef(compName = 'Instance Profile', compDelete=True, itemsKeep=())
