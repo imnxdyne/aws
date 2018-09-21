@@ -4,7 +4,12 @@
 - Security Groups 
 - Volumes 
 - Key Pairs 
-- Alarms 
+- Metric Alarms
+- Config Rules 
+- Configuration Recorder 
+- Cloud Trail 
+- Cloud Watch Log Group 
+- SNS Topic
 - S3 Buckets 
 - VPC 
 - Subnets 
@@ -15,6 +20,7 @@
 - Group 
 - Policy 
 - Role
+- Instance Profile
 
 ## Running aws_cleanup.py
 Both aws_cleanup.py AND aws_cleanup_import.py files need to be in the same directory
@@ -22,15 +28,10 @@ Both aws_cleanup.py AND aws_cleanup_import.py files need to be in the same direc
   - **``# python3 aws_cleanup.py``**  
     Run without parameters, aws_cleanup.py displays an inventory of AWS components for all regions. The column "keep(Tag)" shows which AWS items have the tag key "keep". When "aws_cleanup.py --del" is run, items with “keep” tag key are not deleted.
 
-  - **#``python3 aws_cleanup.py --tag <tag_keys>``**  
-    Same output as the AWS inventory with the additional column “Search Tag". "Search Tag” shows which _<tag_keys>_ were found in which AWS item. One or more case-insensitive tag keys can be included in the “--tag” parameter (ex: ``python3 aws_cleanup.py --tag ``**``sec545 seattle redmond``**).  
- 
- 
+  
 - **DELETING AWS COMPONENTS:**
   - **``# python3 aws_cleanup.py --del``**  
     Deletes all AWS components except for items with the "keep" tag AND Default VPCs. The script will first show an inventory of which AWS items will be terminated/deleted, followed by a confirmation prompt.
-  - **``# python3 aws_cleanup.py --del --tag <tag_keys>``**   
-    Deletes only AWS items having tag keys of _<tag_keys>_. Any AWS item with "keep" tag key will be excluded from removal. Script first displays an inventory of which AWS items will be removed, followed by a confirmation prompt. Having no tags, Key Pairs are out of scope.  
   - **``# python3 aws_cleanup.py --del --vpc_rebuild``**   
     Deletes all AWS components except for items with the "keep" tag AND deletes/recreates all Default VPCs. The recreated Default VPCs will be in much the same state as new AWS configurations. The script will first show an inventory of which AWS items will be terminated/deleted, followed by a confirmation prompt.
   
