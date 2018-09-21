@@ -33,7 +33,7 @@ Both aws_cleanup.py AND aws_cleanup_import.py files need to be in the same direc
   - **``# python3 aws_cleanup.py --del``**  
     Deletes all AWS components except for items with the "keep" tag AND Default VPCs. The script will first show an inventory of which AWS items will be terminated/deleted, followed by a confirmation prompt.
   - **``# python3 aws_cleanup.py --del --vpc_rebuild``**   
-    Deletes all AWS components except for items with the "keep" tag AND deletes/recreates all Default VPCs. The recreated Default VPCs will be in much the same state as new AWS configurations. The script will first show an inventory of which AWS items will be terminated/deleted, followed by a confirmation prompt.
+    Deletes all AWS components except for items with the "keep" tag AND deletes/recreates all Default VPCs. The recreated Default VPCs will be the same configuration as new AWS setup. The script will first list an inventory of which AWS items will be terminated/deleted, followed by a confirmation prompt.
   
 
 
@@ -48,21 +48,21 @@ Both aws_cleanup.py AND aws_cleanup_import.py files need to be in the same direc
   **``self.SecGroup = componentDef(compName = 'Security Groups', compDelete = True)``**  
   **``self.Volume = componentDef(compName = 'Volumes', compDelete = True)``**  
   **``self.KeyPairs = componentDef(compName = 'Key Pairs', compDelete = True)``**  
-  **``self.User = componentDef(compName = 'User', compDelete = True, compKeep=())``**  
-  **``self.Group = componentDef(compName = 'Group', compDelete = True, compKeep=())``**  
+  **``self.User = componentDef(compName = 'User', compDelete = True, itemsKeep=())``**  
+  **``self.Group = componentDef(compName = 'Group', compDelete = True, itemsKeep=())``**  
   **``...``**
   
   List of AWS components that aws_cleanup.py script can inventory/delete  
   Fields:  
   - **compName**: AWS component Name; no need to change.
   - **compDelete**: flag to block entire AWS component from being deleted. **True** to allow AWS component deletion, **False** to block deletion (case sensitive!).
-  - **compKeep**: where AWS components don't have tags (key pairs, users, policies, etc), compKeep is a list of item names not to delete. **If compKeep has a single value, there needs to be a trailing comma after the value**. Ex: compKeep=('scott', )
+  - **itemsKeep**: where AWS components don't have tags (key pairs, users, policies, etc), itemsKeep is a list of item names not to delete. **If itemsKeep has a single value, there needs to be a trailing comma after the value**. Ex: itemsKeep=('scott', )
   
   Examples: 
   - To prevent all Key Pairs from being deleted, change KeyPair's compDelete from True to False (case sensitive!):  
     ``self.KeyPairs = componentDef(compName = 'Key Pairs', ``**``compDelete = False``**``)``
-  - To prevent user Ann from being deleted, change compKeep to the following (trailing comma is requred in the list!):
-    ``self.KeyPairs = componentDef(compName = 'User', compDelete = False, ``**``compKeep = ('ann',)``**``)``
-  - To prevent user Ann and Scott from being deleted, change compKeep to the following:
-    ``self.KeyPairs = componentDef(compName = 'User', compDelete = False, ``**``compKeep = ('ann','scott')``**``)``
+  - To prevent user Ann from being deleted, change itemsKeep to the following (trailing comma is requred in the list!):
+    ``self.KeyPairs = componentDef(compName = 'User', compDelete = False, ``**``itemsKeep = ('ann',)``**``)``
+  - To prevent user Ann and Scott from being deleted, change itemsKeep to the following:
+    ``self.KeyPairs = componentDef(compName = 'User', compDelete = False, ``**``itemsKeep = ('ann','scott')``**``)``
 
