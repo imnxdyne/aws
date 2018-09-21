@@ -33,7 +33,7 @@ Both aws_cleanup.py AND aws_cleanup_import.py files need to be in the same direc
   - **``# python3 aws_cleanup.py --del``**  
     Deletes all AWS components except for items identified as "keep" and Default VPCs. The script will first show an inventory of which AWS items will be terminated/deleted, followed by a confirmation prompt.
   - **``# python3 aws_cleanup.py --del --vpc_rebuild``**   
-    Deletes all AWS components except for items with the "keep" tag and deletes/recreates all Default VPCs. The recreated Default VPCs will be the same configuration as new AWS setup. The script will first list an inventory of which AWS items will be terminated/deleted, followed by a confirmation prompt.
+    Deletes all AWS components except for items with the "keep" tag, and deletes/recreates all Default VPCs. The recreated Default VPCs will be the same configuration as new AWS setup. The script will first list an inventory of which AWS items will be terminated/deleted, followed by a confirmation prompt.
   
 
 
