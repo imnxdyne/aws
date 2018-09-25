@@ -43,7 +43,8 @@ Both aws_cleanup.py AND aws_cleanup_import.py files need to be in the same direc
 ## Advanced Settings:
 **The file aws_cleanup_import.py contains script control settings that can be modified by the end-user.**
     
-- **``self.EC2 = componentDef(compName = 'EC2 instances', compDelete = True)``**  
+- List of AWS components that aws_cleanup.py script can inventory/delete  
+  **``self.EC2 = componentDef(compName = 'EC2 instances', compDelete = True)``**  
   **``self.SecGroup = componentDef(compName = 'Security Groups', compDelete = True)``**  
   **``self.Volume = componentDef(compName = 'Volumes', compDelete = True)``**  
   **``self.KeyPairs = componentDef(compName = 'Key Pairs', compDelete = True)``**  
@@ -51,10 +52,12 @@ Both aws_cleanup.py AND aws_cleanup_import.py files need to be in the same direc
   **``self.Group = componentDef(compName = 'Group', compDelete = True, itemsKeep=())``**  
   **``...``**
   
-  List of AWS components that aws_cleanup.py script can inventory/delete  
+  
   Fields:  
   - **compName**: AWS component Name; no need to change.
-  - **compDelete**: flag to block entire AWS component from being deleted. **True** to allow AWS component deletion, **False** to block deletion (case sensitive!).
+  - **compDelete**: flag to block entire AWS component from being deleted (case sensitive!): 
+    - **True** to allow AWS component deletion
+    - **False** to block deletion
   - **itemsKeep**: in cases where AWS components don't have tags (key pairs, users, policies, etc), itemsKeep is a quoted list of item names not to delete. Ex: itemsKeep=('Seattle', 'Redmond')
   
   Examples: 
