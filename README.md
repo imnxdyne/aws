@@ -28,8 +28,8 @@ Both aws_cleanup.py AND aws_cleanup_import.py files need to be in the same direc
 - **INVENTORY OF AWS COMPONENTS (_no deletion_):**
   - **``# python3 aws_cleanup.py``**  
     Run without parameters, aws_cleanup.py displays an inventory of AWS components for all regions. 
-    - Column "keep(Tag)" shows which AWS items have the tag key "keep", and are not deleted when *aws_cleanup.py --del* is run.
-    - Column "keep" shows which AWS items are in the aws_cleanup_import.py file (see Advanced Settings below). 
+    - Column "keep(Tag)" shows which AWS items have the tag key "keep". These AWS items are blocked from deletion when *aws_cleanup.py --del* is run.
+    - Column "keep" shows which AWS items are flagged in the aws_cleanup_import.py file from being deleted when *aws_cleanup.py --del* is run (see Advanced Settings below). 
 
   
 - **DELETING AWS COMPONENTS:**
@@ -42,10 +42,6 @@ Both aws_cleanup.py AND aws_cleanup_import.py files need to be in the same direc
 
 ## Advanced Settings:
 **The file aws_cleanup_import.py contains script control settings that can be modified by the end-user.**
-- **``constantKeepTag = ['keep']``**  
-  Python list of tag keys used to flag AWS items from being deleted.  Can have multiple case-insensitive entries.  
-  Ex: to replace the default 'keep' flag with 'no_delete' and include tag key 'wfw' for blocking, change constantKeepTag to the following:  
-    ``constantKeepTag =['no_delete', 'wfw']``
     
 - **``self.EC2 = componentDef(compName = 'EC2 instances', compDelete = True)``**  
   **``self.SecGroup = componentDef(compName = 'Security Groups', compDelete = True)``**  
@@ -59,13 +55,13 @@ Both aws_cleanup.py AND aws_cleanup_import.py files need to be in the same direc
   Fields:  
   - **compName**: AWS component Name; no need to change.
   - **compDelete**: flag to block entire AWS component from being deleted. **True** to allow AWS component deletion, **False** to block deletion (case sensitive!).
-  - **itemsKeep**: where AWS components don't have tags (key pairs, users, policies, etc), itemsKeep is a quoted list of item names not to delete. Ex: itemsKeep=('Seattle', 'Redmond')
+  - **itemsKeep**: in cases where AWS components don't have tags (key pairs, users, policies, etc), itemsKeep is a quoted list of item names not to delete. Ex: itemsKeep=('Seattle', 'Redmond')
   
   Examples: 
   - To prevent all Key Pairs from being deleted, change KeyPair's compDelete from True to False (case sensitive!):  
     ``self.KeyPairs = componentDef(compName = 'Key Pairs', ``**``compDelete = False``**``)``
-  - To prevent user Ann from being deleted, change itemsKeep to the following (trailing comma is requred in the list!):
-    ``self.KeyPairs = componentDef(compName = 'User', compDelete = False, ``**``itemsKeep = ('ann',)``**``)``
-  - To prevent user Ann and Scott from being deleted, change itemsKeep to the following:
-    ``self.KeyPairs = componentDef(compName = 'User', compDelete = False, ``**``itemsKeep = ('ann','scott')``**``)``
+  - To prevent user Smith from being deleted, set itemsKeep to the following:
+    ``self.Users = componentDef(compName = 'User', compDelete = False, ``**``itemsKeep = ('smith')``**``)``
+  - To prevent users Smith and Jones from being deleted, change itemsKeep to the following:
+    ``self.Users = componentDef(compName = 'User', compDelete = False, ``**``itemsKeep = ('smith','jones')``**``)``
 
