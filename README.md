@@ -54,11 +54,11 @@ Both aws_cleanup.py AND aws_cleanup_import.py files need to be in the same direc
   
   
   Fields:  
-  - **compName**: AWS component Name; no need to change.
-  - **compDelete**: flag to block entire AWS component from being deleted (case sensitive!): 
+  - **compName**: formatted AWS component Name; no need to change.
+  - **compDelete**: boolean flag to block entire AWS component from being deleted (case sensitive!): 
     - **True** to allow AWS component deletion
-    - **False** to block deletion
-  - **itemsKeep**: in cases where AWS components don't have tags (key pairs, users, policies, etc), itemsKeep is a quoted list of item names not to delete. Ex: itemsKeep=('Seattle', 'Redmond')
+    - **False** to block AWS component deletion
+  - **itemsKeep**: in cases where AWS components don't have tags (key pairs, users, policies, etc), itemsKeep is a list of item names in quotes not to delete - for example itemsKeep=('Seattle', 'Redmond')
   
   Examples: 
   - To prevent all Key Pairs from being deleted, change KeyPair's compDelete from True to False (case sensitive!):  
