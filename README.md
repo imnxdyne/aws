@@ -7,6 +7,7 @@
 - Metric Alarms
 - Config Rules 
 - Configuration Recorder 
+- CloudFormation Stacks
 - Cloud Trail 
 - Cloud Watch Log Group 
 - SNS Topic
