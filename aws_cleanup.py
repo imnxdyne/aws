@@ -23,6 +23,9 @@
 #  2018.09.21 - ww - Added Metric Alarms, Config Rules, Configuration Recorder, Cloud Trail, Cloud Watch Log
 #                    Group, SNS Topic. Updated script framework, format improvements, etc. Removed  
 #                    option for deleting by specific tag - too many components with non-tags.
+#  2018.09.25 - ww - Added CloudFormation Stacks, updated code for report breaks. Added "--ignore_conn_err"
+#                    parameter to allow script to continue running in case of region connectivity issues.
+#                    Without "--ignore_conn_err", script will crash during connection errors.
 import sys
 import os
 import re
@@ -57,8 +60,8 @@ if aws_cleanup_import_ver != aws_cleanup_main_ver:
 #  Setting up a named tuple for consolidating all the arguments passed plus a location
 #  to store the normalized keepTag. Believe that Python 3.7 has a better
 #  method for defining the "default".
-scriptArgsTuple = namedtuple('scriptArgsTuple', ['inv', 'vpc_rebuild', 'del_all', 'keepTag'])
-scriptArgsTuple.__new__.__defaults__ = (False, False, False, False, None, constantKeepTag)
+scriptArgsTuple = namedtuple('scriptArgsTuple', ['inv', 'vpc_rebuild', 'del_all', 'ignore_conn_err', 'keepTag'])
+scriptArgsTuple.__new__.__defaults__ = (False, False, False, False, None, False, constantKeepTag)
 
 def formatDispName(*parNames):
   parNamesDisp = []
@@ -130,7 +133,7 @@ class awsRpt:
     self.rows=0
     #  self.regionBreak variables - used for tracking when the region changes.
     self.regionBreak_newRpt = True
-    self.regionBreak_regionNameTrack = None
+    self.reportBreak_colValueTrack = None
 
     #  Remove column headers with the value of "None".
     while None in self.headerList:
@@ -156,20 +159,28 @@ class awsRpt:
 
   def passit(self):
     pass
-  
-  def regionBreak(self, regionName):
-    returnVal = False
-    if self.regionBreak_regionNameTrack is None:
-      self.regionBreak_regionNameTrack = regionName
-    else:
-      if self.regionBreak_regionNameTrack != regionName:
-        returnVal = True
-        self.regionBreak_regionNameTrack = regionName
-    return returnVal
 
-  def addLine(self, rptBreak, *rptRow):
+  def addLine(self, rptBreakEnable, *rptRow):
     rptRowList = list(rptRow)
-    #  Do a quick check to make sure that the number of row columns matches the number of 
+
+    #  Check to see if this report has breaks in it.
+    if (type(rptBreakEnable) not in (type(bool()), type(int()))) or (type(rptBreakEnable) == type(int()) and rptBreakEnable < 1):
+      raise ValueError('awsRpt.addLine', 'The first argument is boolean or int: True=report break using first col, int=report break using "int" col (starting with 1), False=disable report break')
+    
+    rptBreak = False
+    if rptBreakEnable:
+      if type(rptBreakEnable) == type(int()):
+        rptBreakCol = rptBreakEnable - 1
+      else:
+        rptBreakCol = 0
+      if self.reportBreak_colValueTrack is None:
+        self.reportBreak_colValueTrack = rptRowList[rptBreakCol]
+      else:
+        if self.reportBreak_colValueTrack != rptRowList[rptBreakCol]:
+          rptBreak = True
+          self.reportBreak_colValueTrack = rptRowList[rptBreakCol]
+
+    #  Do a quick check to make sure that the number of row columns matches the number of
     #  header columns. Need to loop through as some column values can be None, which
     #  is a skipped column.
     while None in rptRowList:
@@ -287,17 +298,18 @@ class tagScan:
       if parScriptArg.del_all:
         self.delThisItem = True
 
-argUsage = "usage: aws_cleanup.py -[h][--del][--vpc_rebuild]"
+argUsage = "usage: aws_cleanup.py -[h][--del][--vpc_rebuild][--ignore_conn_err]"
 parser = argparse.ArgumentParser(allow_abbrev=False,usage=argUsage)
 #  As "del" is a reserved word in Python, needed to have an alnternate destination.
 parser.add_argument('-d', '--del', dest='delete', help='delete/terminate AWS components', action="store_true", default=False)
 parser.add_argument('--vpc_rebuild', help='rebuild VPC default environment for all regions', action="store_true", default=False)
 parser.add_argument('--test_region', help='reduces number of in-scope regions for code testing for better performance -ww', action="store_true", default=False)
+parser.add_argument('--ignore_conn_err', help='during inventory, script will ignore connectivity errors to AWS regions', action="store_true", default=False)
 args = parser.parse_args()
 if args.delete:
-  aws_cleanupArg = scriptArgsTuple(del_all=True, vpc_rebuild=args.vpc_rebuild)
+  aws_cleanupArg = scriptArgsTuple(del_all=True, vpc_rebuild=args.vpc_rebuild, ignore_conn_err=args.ignore_conn_err)
 else:
-  aws_cleanupArg = scriptArgsTuple(inv=True, vpc_rebuild=args.vpc_rebuild)
+  aws_cleanupArg = scriptArgsTuple(inv=True, vpc_rebuild=args.vpc_rebuild, ignore_conn_err=args.ignore_conn_err)
 
 keepTagHeader = [', '.join(aws_cleanupArg.keepTag)+"(Tag)","","^"]
 
@@ -383,7 +395,9 @@ MetricAlarmsRpt = awsRpt("{0}:".format(awsComponent.MetricAlarms.compName), *[["
 CloudWatchLogGroupsRpt = awsRpt("{0}:".format(awsComponent.CloudWatchLogGroups.compName), *[["Region", 16],["Cloud Watch Log Group Name", 37],["Keep"]])
 ConfigRulesRpt = awsRpt("{0}:".format(awsComponent.ConfigRules.compName), *[["Region", 16],["Config Rule Name", 37],["Rule Description", 70], ['State', 17] ,["Keep"]])
 ConfigurationRecordersRpt = awsRpt("{0}:".format(awsComponent.ConfigurationRecorders.compName), *[["Region", 16],["Config Recorder Name", 37],["Recording?"],["Keep"]])
+CloudFormationStacksRpt = awsRpt("{0}:".format(awsComponent.CloudFormationStacks.compName), *[["Region", 16], ["Name", 37],["Stack Status", 25],["Keep"]])
 CloudTrailRpt = awsRpt("{0}:".format(awsComponent.CloudTrail.compName), *[["Home Region", 16],["Name", 37],["All Regions?"],["S3BucketName", 30],["Keep"]])
+AssessmentTargetsRpt = awsRpt("{0}:".format(awsComponent.AssessmentTargets.compName), *[["Region", 16],["Assessment Target Name", 37],["Keep"]])
 SNSTopicsRpt = awsRpt("{0}:".format(awsComponent.SNSTopics.compName), *[["Region", 16],["SNS Topic", 37],["Keep"]])
 VPCRpt = awsRpt("{0}{1}:".format(awsComponent.VPC.compName, formatDispName('' if aws_cleanupArg.vpc_rebuild else 'non-default VPC')), *[["Region", 16],["CIDR Block", 20],["VPC ID", 25],["VPC Default"],["Name(Tag)", 30],keepTagHeader,["State", 10]])
 RouteTablesRpt = awsRpt("{0}{1}:".format(awsComponent.RouteTables.compName, formatDispName('' if aws_cleanupArg.vpc_rebuild else 'for non-default VPCs')), *[["Region", 16], ["Route Table ID", 28],["VPC ID", 35],["Main", 4],["Name(Tag)", 30],keepTagHeader])
@@ -403,245 +417,395 @@ for currentRegion in sorted(regions):
   clientCloudTrailRegion = boto3.client('cloudtrail', region_name=currentRegion)
   clientConfigRegion = boto3.client('config', region_name=currentRegion)
   clientSNSRegion = boto3.client('sns', region_name=currentRegion)
-
+  clientInspectorRegion = boto3.client('inspector', region_name=currentRegion)
+  clientCloudFormationRegion = boto3.client('cloudformation', region_name=currentRegion)
 
   #################################################################
   #  EC2 Instances
   #################################################################
   #  ...CompSci truth tables from WWU...
   if aws_cleanupArg.inv or awsComponent.EC2.compDelete:
-    for resp in clientEC2Region.describe_instances()['Reservations']:
-      for inst in resp['Instances']:
-        tagData = tagScan(inst.get('Tags'), aws_cleanupArg)
-        rptCommonLine = (currentRegion, inst['InstanceId'],tagData.nameTag,tagData.keepTagFound,inst['ImageId'],inst['State']['Name'])
-        if aws_cleanupArg.inv:
-          EC2Rpt.addLine(EC2Rpt.regionBreak(currentRegion), *rptCommonLine)
-        elif inst['State']['Name'] != 'terminated':
-          if tagData.delThisItem:
-            EC2Rpt.addLine(EC2Rpt.regionBreak(currentRegion), *rptCommonLine)
-            termTrack[awsComponent.EC2][currentRegion][inst['InstanceId']] = {'DISPLAY_ID': inst['InstanceId'] + formatDispName(tagData.nameTag),'TERMINATED':False}
+    try:
+      for resp in clientEC2Region.describe_instances()['Reservations']:
+        for inst in resp['Instances']:
+          tagData = tagScan(inst.get('Tags'), aws_cleanupArg)
+          rptCommonLine = (True, currentRegion, inst['InstanceId'],tagData.nameTag,tagData.keepTagFound,inst['ImageId'],inst['State']['Name'])
+          if aws_cleanupArg.inv:
+            EC2Rpt.addLine(*rptCommonLine)
+          elif inst['State']['Name'] != 'terminated':
+            if tagData.delThisItem:
+              EC2Rpt.addLine(*rptCommonLine)
+              termTrack[awsComponent.EC2][currentRegion][inst['InstanceId']] = {'DISPLAY_ID': inst['InstanceId'] + formatDispName(tagData.nameTag),'TERMINATED':False}
+    except EndpointConnectionError:
+      print('\tComponent "{0}" - cannot connect to region {1}'.format(awsComponent.EC2.compName, currentRegion))
+      if aws_cleanupArg.ignore_conn_err:
+        pass
+      else:
+        exit(100)
 
   #################################################################
   #  SecurityGroups
   #################################################################
   if aws_cleanupArg.inv or awsComponent.SecurityGroups.compDelete:
-    for SecurityGroups in clientEC2Region.describe_security_groups()['SecurityGroups']:
-      # ... can't do anything with the default security group
-      if SecurityGroups['GroupName'] != 'default':
-        tagData = tagScan(SecurityGroups.get('Tags'), aws_cleanupArg)
-        rptCommonLine = (currentRegion, SecurityGroups['GroupId'],tagData.nameTag,tagData.keepTagFound,SecurityGroups['GroupName'],SecurityGroups['Description'])
-        if aws_cleanupArg.inv:
-          SecurityGroupsRpt.addLine(SecurityGroupsRpt.regionBreak(currentRegion), *rptCommonLine)
-        elif tagData.delThisItem:
-          SecurityGroupsRpt.addLine(SecurityGroupsRpt.regionBreak(currentRegion), *rptCommonLine)
-          termTrack[awsComponent.SecurityGroups][currentRegion][SecurityGroups['GroupId']] = {'DISPLAY_ID': SecurityGroups['GroupId'] + formatDispName(tagData.nameTag, SecurityGroups['GroupName'], SecurityGroups['Description'])}
+    try:
+      for SecurityGroups in clientEC2Region.describe_security_groups()['SecurityGroups']:
+        # ... can't do anything with the default security group
+        if SecurityGroups['GroupName'] != 'default':
+          tagData = tagScan(SecurityGroups.get('Tags'), aws_cleanupArg)
+          rptCommonLine = (True, currentRegion, SecurityGroups['GroupId'],tagData.nameTag,tagData.keepTagFound,SecurityGroups['GroupName'],SecurityGroups['Description'])
+          if aws_cleanupArg.inv:
+            SecurityGroupsRpt.addLine(*rptCommonLine)
+          elif tagData.delThisItem:
+            SecurityGroupsRpt.addLine(*rptCommonLine)
+            termTrack[awsComponent.SecurityGroups][currentRegion][SecurityGroups['GroupId']] = {'DISPLAY_ID': SecurityGroups['GroupId'] + formatDispName(tagData.nameTag, SecurityGroups['GroupName'], SecurityGroups['Description'])}
+    except EndpointConnectionError:
+      print('\tComponent "{0}" - cannot connect to region {1}'.format(awsComponent.SecurityGroups.compName, currentRegion))
+      if aws_cleanupArg.ignore_conn_err:
+        pass
+      else:
+        exit(100)
           
 
   #################################################################
   #  Volumes
   #################################################################
   if aws_cleanupArg.inv or awsComponent.Volumes.compDelete:
-    for Volumes in clientEC2Region.describe_volumes()['Volumes']:
-      tagData = tagScan(Volumes.get('Tags'), aws_cleanupArg)
-      rptCommonLine = (currentRegion, Volumes['VolumeId'],tagData.nameTag,tagData.keepTagFound,Volumes['VolumeType'],Volumes['State'])
-      if aws_cleanupArg.inv:
-        VolumesRpt.addLine(VolumesRpt.regionBreak(currentRegion), *rptCommonLine)
-      elif tagData.delThisItem:
-        VolumesRpt.addLine(VolumesRpt.regionBreak(currentRegion), *rptCommonLine)
-        termTrack[awsComponent.Volumes][currentRegion][Volumes['VolumeId']] = {'DISPLAY_ID': Volumes['VolumeId'] + formatDispName(tagData.nameTag)}
+    try:
+      for Volumes in clientEC2Region.describe_volumes()['Volumes']:
+        tagData = tagScan(Volumes.get('Tags'), aws_cleanupArg)
+        rptCommonLine = (True, currentRegion, Volumes['VolumeId'],tagData.nameTag,tagData.keepTagFound,Volumes['VolumeType'],Volumes['State'])
+        if aws_cleanupArg.inv:
+          VolumesRpt.addLine(*rptCommonLine)
+        elif tagData.delThisItem:
+          VolumesRpt.addLine(*rptCommonLine)
+          termTrack[awsComponent.Volumes][currentRegion][Volumes['VolumeId']] = {'DISPLAY_ID': Volumes['VolumeId'] + formatDispName(tagData.nameTag)}
+    except EndpointConnectionError:
+      print('\tComponent "{0}" - cannot connect to region {1}'.format(awsComponent.Volumes.compName, currentRegion))
+      if aws_cleanupArg.ignore_conn_err:
+        pass
+      else:
+        exit(100)
 
   #################################################################
   #  KeyPairs
   #################################################################
   if aws_cleanupArg.inv or awsComponent.KeyPairs.compDelete:
-    for KeyPairs in clientEC2Region.describe_key_pairs()['KeyPairs']:
-      chkItemKeep = reScanItemsKeep(KeyPairs['KeyName'], awsComponent.KeyPairs)
-      rptCommonLine = (currentRegion, KeyPairs['KeyName'], chkItemKeep)
-      if aws_cleanupArg.inv:
-        KeyPairsRpt.addLine(KeyPairsRpt.regionBreak(currentRegion), *rptCommonLine)
-      elif not chkItemKeep:
-        KeyPairsRpt.addLine(KeyPairsRpt.regionBreak(currentRegion), *rptCommonLine)
-        termTrack[awsComponent.KeyPairs][currentRegion][KeyPairs['KeyName']] = None
+    try:
+      for KeyPairs in clientEC2Region.describe_key_pairs()['KeyPairs']:
+        chkItemKeep = reScanItemsKeep(KeyPairs['KeyName'], awsComponent.KeyPairs)
+        rptCommonLine = (True, currentRegion, KeyPairs['KeyName'], chkItemKeep)
+        if aws_cleanupArg.inv:
+          KeyPairsRpt.addLine(*rptCommonLine)
+        elif not chkItemKeep:
+          KeyPairsRpt.addLine(*rptCommonLine)
+          termTrack[awsComponent.KeyPairs][currentRegion][KeyPairs['KeyName']] = None
+    except EndpointConnectionError:
+      print('\tComponent "{0}" - cannot connect to region {1}'.format(awsComponent.KeyPairs.compName, currentRegion))
+      if aws_cleanupArg.ignore_conn_err:
+        pass
+      else:
+        exit(100)
 
   #################################################################
   #  MetricAlarms - Cloudwatch
   #################################################################
   if aws_cleanupArg.inv or awsComponent.MetricAlarms.compDelete:
-    for MetricAlarms in clientCloudwatchRegion.describe_alarms()['MetricAlarms']:
-      chkItemKeep = reScanItemsKeep(MetricAlarms['AlarmName'], awsComponent.MetricAlarms)
-      rptCommonLine = (currentRegion, MetricAlarms['AlarmName'], str(MetricAlarms.get('AlarmDescription') or ''), MetricAlarms.get('StateValue'), MetricAlarms.get('Namespace'), MetricAlarms.get('MetricName'),chkItemKeep)
-      if aws_cleanupArg.inv:
-        MetricAlarmsRpt.addLine(MetricAlarmsRpt.regionBreak(currentRegion), *rptCommonLine)
-      elif not chkItemKeep:
-        MetricAlarmsRpt.addLine(MetricAlarmsRpt.regionBreak(currentRegion), *rptCommonLine)
-        termTrack[awsComponent.MetricAlarms][currentRegion][MetricAlarms['AlarmName']] = {'DISPLAY_ID': MetricAlarms['AlarmName'] + formatDispName(MetricAlarms.get('AlarmDescription'))}
+    try:
+      for MetricAlarms in clientCloudwatchRegion.describe_alarms()['MetricAlarms']:
+        chkItemKeep = reScanItemsKeep(MetricAlarms['AlarmName'], awsComponent.MetricAlarms)
+        rptCommonLine = (True, currentRegion, MetricAlarms['AlarmName'], str(MetricAlarms.get('AlarmDescription') or ''), MetricAlarms.get('StateValue'), MetricAlarms.get('Namespace'), MetricAlarms.get('MetricName'),chkItemKeep)
+        if aws_cleanupArg.inv:
+          MetricAlarmsRpt.addLine(*rptCommonLine)
+        elif not chkItemKeep:
+          MetricAlarmsRpt.addLine(*rptCommonLine)
+          termTrack[awsComponent.MetricAlarms][currentRegion][MetricAlarms['AlarmName']] = {'DISPLAY_ID': MetricAlarms['AlarmName'] + formatDispName(MetricAlarms.get('AlarmDescription'))}
+    except EndpointConnectionError:
+      print('\tComponent "{0}" - cannot connect to region {1}'.format(awsComponent.MetricAlarms.compName, currentRegion))
+      if aws_cleanupArg.ignore_conn_err:
+        pass
+      else:
+        exit(100)
 
   #################################################################
   #  CloudWatchLogGroups
   #################################################################
   if aws_cleanupArg.inv or awsComponent.CloudWatchLogGroups.compDelete:
-    for CloudWatchLogGroups in clientCloudWatchLogRegion.describe_log_groups()['logGroups']:
-      chkItemKeep = reScanItemsKeep(CloudWatchLogGroups['logGroupName'], awsComponent.CloudWatchLogGroups)
-      rptCommonLine = (currentRegion, CloudWatchLogGroups['logGroupName'],chkItemKeep)
-      if aws_cleanupArg.inv:
-        CloudWatchLogGroupsRpt.addLine(CloudWatchLogGroupsRpt.regionBreak(currentRegion), *rptCommonLine)
-      elif not chkItemKeep:
-        CloudWatchLogGroupsRpt.addLine(CloudWatchLogGroupsRpt.regionBreak(currentRegion), *rptCommonLine)
-        termTrack[awsComponent.CloudWatchLogGroups][currentRegion][CloudWatchLogGroups['logGroupName']] = None
+    try:
+      for CloudWatchLogGroups in clientCloudWatchLogRegion.describe_log_groups()['logGroups']:
+        chkItemKeep = reScanItemsKeep(CloudWatchLogGroups['logGroupName'], awsComponent.CloudWatchLogGroups)
+        rptCommonLine = (True, currentRegion, CloudWatchLogGroups['logGroupName'],chkItemKeep)
+        if aws_cleanupArg.inv:
+          CloudWatchLogGroupsRpt.addLine(*rptCommonLine)
+        elif not chkItemKeep:
+          CloudWatchLogGroupsRpt.addLine(*rptCommonLine)
+          termTrack[awsComponent.CloudWatchLogGroups][currentRegion][CloudWatchLogGroups['logGroupName']] = None
+    except EndpointConnectionError:
+      print('\tComponent "{0}" - cannot connect to region {1}'.format(awsComponent.CloudWatchLogGroups.compName, currentRegion))
+      if aws_cleanupArg.ignore_conn_err:
+        pass
+      else:
+        exit(100)
+
 
   #################################################################
   #  ConfigRules
   #################################################################
   if aws_cleanupArg.inv or awsComponent.ConfigRules.compDelete:
-    for ConfigRules in clientConfigRegion.describe_config_rules()['ConfigRules']:
-      chkItemKeep = reScanItemsKeep(ConfigRules['ConfigRuleName'], awsComponent.ConfigRules)
-      rptCommonLine = (currentRegion, ConfigRules['ConfigRuleName'], str(ConfigRules.get('Description') or ''), ConfigRules.get('ConfigRuleState'), chkItemKeep)
-      if aws_cleanupArg.inv:
-        ConfigRulesRpt.addLine(ConfigRulesRpt.regionBreak(currentRegion), *rptCommonLine)
-      elif not chkItemKeep and ConfigRules.get('ConfigRuleState') != "DELETING":
-        ConfigRulesRpt.addLine(ConfigRulesRpt.regionBreak(currentRegion), *rptCommonLine)
-        termTrack[awsComponent.ConfigRules][currentRegion][ConfigRules['ConfigRuleName']] = {'DISPLAY_ID': ConfigRules['ConfigRuleName'] + formatDispName(ConfigRules.get('Description'))}
+    try:
+      for ConfigRules in clientConfigRegion.describe_config_rules()['ConfigRules']:
+        chkItemKeep = reScanItemsKeep(ConfigRules['ConfigRuleName'], awsComponent.ConfigRules)
+        rptCommonLine = (True, currentRegion, ConfigRules['ConfigRuleName'], str(ConfigRules.get('Description') or ''), ConfigRules.get('ConfigRuleState'), chkItemKeep)
+        if aws_cleanupArg.inv:
+          ConfigRulesRpt.addLine(*rptCommonLine)
+        elif not chkItemKeep and ConfigRules.get('ConfigRuleState') != "DELETING":
+          ConfigRulesRpt.addLine(*rptCommonLine)
+          termTrack[awsComponent.ConfigRules][currentRegion][ConfigRules['ConfigRuleName']] = {'DISPLAY_ID': ConfigRules['ConfigRuleName'] + formatDispName(ConfigRules.get('Description'))}
+    except EndpointConnectionError:
+      print('\tComponent "{0}" - cannot connect to region {1}'.format(awsComponent.ConfigRules.compName, currentRegion))
+      if aws_cleanupArg.ignore_conn_err:
+        pass
+      else:
+        exit(100)
 
   #################################################################
   #  ConfigurationRecorders
   #################################################################
   if aws_cleanupArg.inv or awsComponent.ConfigurationRecorders.compDelete:
-    for ConfigurationRecorders in clientConfigRegion.describe_configuration_recorder_status()['ConfigurationRecordersStatus']:
-      chkItemKeep = reScanItemsKeep(ConfigurationRecorders['name'], awsComponent.ConfigurationRecorders)
-      rptCommonLine = (currentRegion, ConfigurationRecorders['name'], dispYesNo(ConfigurationRecorders.get('recording')), chkItemKeep)
-      if aws_cleanupArg.inv:
-        ConfigurationRecordersRpt.addLine(ConfigurationRecordersRpt.regionBreak(currentRegion), *rptCommonLine)
-      elif not chkItemKeep:
-        ConfigurationRecordersRpt.addLine(ConfigurationRecordersRpt.regionBreak(currentRegion), *rptCommonLine)
-        termTrack[awsComponent.ConfigurationRecorders][currentRegion][ConfigurationRecorders['name']] = None
+    try:
+      for ConfigurationRecorders in clientConfigRegion.describe_configuration_recorder_status()['ConfigurationRecordersStatus']:
+        chkItemKeep = reScanItemsKeep(ConfigurationRecorders['name'], awsComponent.ConfigurationRecorders)
+        rptCommonLine = (True, currentRegion, ConfigurationRecorders['name'], dispYesNo(ConfigurationRecorders.get('recording')), chkItemKeep)
+        if aws_cleanupArg.inv:
+          ConfigurationRecordersRpt.addLine(*rptCommonLine)
+        elif not chkItemKeep:
+          ConfigurationRecordersRpt.addLine(*rptCommonLine)
+          termTrack[awsComponent.ConfigurationRecorders][currentRegion][ConfigurationRecorders['name']] = None
+    except EndpointConnectionError:
+      print('\tComponent "{0}" - cannot connect to region {1}'.format(awsComponent.ConfigurationRecorders.compName, currentRegion))
+      if aws_cleanupArg.ignore_conn_err:
+        pass
+      else:
+        exit(100)
+
+  #################################################################
+  #  CloudFormationStacks
+  #################################################################
+  if aws_cleanupArg.inv or awsComponent.CloudFormationStacks.compDelete:
+    try:
+      for CloudFormationStacks in clientCloudFormationRegion.list_stacks()['StackSummaries']:
+        chkItemKeep = reScanItemsKeep(CloudFormationStacks['StackName'], awsComponent.CloudFormationStacks)
+        rptCommonLine = (True, currentRegion, CloudFormationStacks['StackName'],CloudFormationStacks['StackStatus'], chkItemKeep)
+        if aws_cleanupArg.inv:
+          CloudFormationStacksRpt.addLine(*rptCommonLine)
+        elif not chkItemKeep:
+          #  Included the most likely status below...
+          if CloudFormationStacks['StackStatus'] not in ('DELETE_IN_PROGRESS', 'DELETE_FAILED', 'DELETE_COMPLETE'):
+            CloudFormationStacksRpt.addLine(*rptCommonLine)
+            termTrack[awsComponent.CloudFormationStacks][currentRegion][CloudFormationStacks['StackId']] = {'DISPLAY_ID': CloudFormationStacks['StackName']}
+    except EndpointConnectionError:
+      print('\tComponent "{0}" - cannot connect to region {1}'.format(awsComponent.CloudFormationStacks.compName, currentRegion))
+      if aws_cleanupArg.ignore_conn_err:
+        pass
+      else:
+        exit(100)
 
   #################################################################
   #  CloudTrail
   #################################################################
   if aws_cleanupArg.inv or awsComponent.CloudTrail.compDelete:
-    for CloudTrail in clientCloudTrailRegion.describe_trails()['trailList']:
-      if not (CloudTrail['IsMultiRegionTrail'] and CloudTrail['HomeRegion'] != currentRegion):
-        chkItemKeep = reScanItemsKeep(CloudTrail['Name'], awsComponent.CloudTrail)
-        rptCommonLine = (currentRegion, CloudTrail['Name'], 'Yes' if CloudTrail['IsMultiRegionTrail'] else "", CloudTrail['S3BucketName'], chkItemKeep)
-        if aws_cleanupArg.inv:
-          CloudTrailRpt.addLine(CloudTrailRpt.regionBreak(currentRegion), *rptCommonLine)
-        elif not chkItemKeep:
-          CloudTrailRpt.addLine(CloudTrailRpt.regionBreak(currentRegion), *rptCommonLine)
-          termTrack[awsComponent.CloudTrail][currentRegion][CloudTrail['TrailARN']] = {'DISPLAY_ID': CloudTrail['Name']}
+    try:
+      for CloudTrail in clientCloudTrailRegion.describe_trails()['trailList']:
+        if not (CloudTrail['IsMultiRegionTrail'] and CloudTrail['HomeRegion'] != currentRegion):
+          chkItemKeep = reScanItemsKeep(CloudTrail['Name'], awsComponent.CloudTrail)
+          rptCommonLine = (True, currentRegion, CloudTrail['Name'], 'Yes' if CloudTrail['IsMultiRegionTrail'] else "", CloudTrail['S3BucketName'], chkItemKeep)
+          if aws_cleanupArg.inv:
+            CloudTrailRpt.addLine(*rptCommonLine)
+          elif not chkItemKeep:
+            CloudTrailRpt.addLine(*rptCommonLine)
+            termTrack[awsComponent.CloudTrail][currentRegion][CloudTrail['TrailARN']] = {'DISPLAY_ID': CloudTrail['Name']}
+    except EndpointConnectionError:
+      print('\tComponent "{0}" - cannot connect to region {1}'.format(awsComponent.CloudTrail.compName, currentRegion))
+      if aws_cleanupArg.ignore_conn_err:
+        pass
+      else:
+        exit(100)
+
+  #################################################################
+  #  AssessmentTargets 
+  #################################################################
+  if aws_cleanupArg.inv or awsComponent.AssessmentTargets.compDelete:
+    #  If a region desn't have Inspector, list_assessment_targets will raise an EndpointConnectionError.
+    #  The "try:" below will catch that error and keep the script executing. May need this for
+    #  other cases.
+    try:
+      for AssessmentTargetsArn in clientInspectorRegion.list_assessment_targets()['assessmentTargetArns']:
+        for AssessmentTargets in clientInspectorRegion.describe_assessment_targets(assessmentTargetArns = [AssessmentTargetsArn])['assessmentTargets']:
+          chkItemKeep = reScanItemsKeep(AssessmentTargets['name'], awsComponent.AssessmentTargets)
+          rptCommonLine = (True, currentRegion, AssessmentTargets['name'], chkItemKeep)
+          if aws_cleanupArg.inv:
+            AssessmentTargetsRpt.addLine(*rptCommonLine)
+          elif not chkItemKeep:
+            AssessmentTargetsRpt.addLine(*rptCommonLine)
+            termTrack[awsComponent.AssessmentTargets][currentRegion][AssessmentTargetsArn] = {'DISPLAY_ID': AssessmentTargets['name']}
+    except EndpointConnectionError: 
+      pass
+   
 
   #################################################################
   #  SNSTopics
   #################################################################
   if aws_cleanupArg.inv or awsComponent.SNSTopics.compDelete:
-    for SNSTopics in clientSNSRegion.list_topics()['Topics']:
-      chkItemKeep = reScanItemsKeep(SNSTopics['TopicArn'].split(':')[-1], awsComponent.SNSTopics)
-      rptCommonLine = (currentRegion, SNSTopics['TopicArn'].split(':')[-1], chkItemKeep)
-      if aws_cleanupArg.inv:
-        SNSTopicsRpt.addLine(SNSTopicsRpt.regionBreak(currentRegion), *rptCommonLine)
-      elif not chkItemKeep:
-        SNSTopicsRpt.addLine(SNSTopicsRpt.regionBreak(currentRegion), *rptCommonLine)
-        termTrack[awsComponent.SNSTopics][currentRegion][SNSTopics['TopicArn']] = {'DISPLAY_ID': SNSTopics['TopicArn'].split(':')[-1]}
+    try:
+      for SNSTopics in clientSNSRegion.list_topics()['Topics']:
+        chkItemKeep = reScanItemsKeep(SNSTopics['TopicArn'].split(':')[-1], awsComponent.SNSTopics)
+        rptCommonLine = (True, currentRegion, SNSTopics['TopicArn'].split(':')[-1], chkItemKeep)
+        if aws_cleanupArg.inv:
+          SNSTopicsRpt.addLine(*rptCommonLine)
+        elif not chkItemKeep:
+          SNSTopicsRpt.addLine(*rptCommonLine)
+          termTrack[awsComponent.SNSTopics][currentRegion][SNSTopics['TopicArn']] = {'DISPLAY_ID': SNSTopics['TopicArn'].split(':')[-1]}
+    except EndpointConnectionError:
+      print('\tComponent "{0}" - cannot connect to region {1}'.format(awsComponent.SNSTopics.compName, currentRegion))
+      if aws_cleanupArg.ignore_conn_err:
+        pass
+      else:
+        exit(100)
+          
 
   #################################################################
   #  VPC
   #################################################################
   if aws_cleanupArg.inv or awsComponent.VPC.compDelete:
-    VPCThereIsDefault = False
-    for VPC in clientEC2Region.describe_vpcs()['Vpcs']:
-      if VPC['IsDefault']:
-        VPCThereIsDefault = True
-      if aws_cleanupArg.vpc_rebuild or (not aws_cleanupArg.vpc_rebuild and not VPC['IsDefault']):
-        tagData = tagScan(VPC.get('Tags'), aws_cleanupArg)
-        rptCommonLine = (currentRegion, VPC['CidrBlock'], VPC['VpcId'], dispYesNo(VPC['IsDefault']), tagData.nameTag,tagData.keepTagFound,VPC['State'])
-        if aws_cleanupArg.inv:
-          VPCRpt.addLine(VPCRpt.regionBreak(currentRegion), *rptCommonLine)
-        elif tagData.delThisItem:
-          VPCRpt.addLine(VPCRpt.regionBreak(currentRegion), *rptCommonLine)
-          termTrack[awsComponent.VPC][currentRegion][VPC['VpcId']] = {'DISPLAY_ID': VPC['VpcId'] + formatDispName(tagData.nameTag, VPC['CidrBlock'])}
-    if VPCThereIsDefault:
-      VPCDefaultByRegion.append(currentRegion)
-    else:
-      VPCNoDefaultByRegion.append(currentRegion)
+    try:
+      VPCThereIsDefault = False
+      for VPC in clientEC2Region.describe_vpcs()['Vpcs']:
+        if VPC['IsDefault']:
+          VPCThereIsDefault = True
+        if aws_cleanupArg.vpc_rebuild or (not aws_cleanupArg.vpc_rebuild and not VPC['IsDefault']):
+          tagData = tagScan(VPC.get('Tags'), aws_cleanupArg)
+          rptCommonLine = (True, currentRegion, VPC['CidrBlock'], VPC['VpcId'], dispYesNo(VPC['IsDefault']), tagData.nameTag,tagData.keepTagFound,VPC['State'])
+          if aws_cleanupArg.inv:
+            VPCRpt.addLine(*rptCommonLine)
+          elif tagData.delThisItem:
+            VPCRpt.addLine(*rptCommonLine)
+            termTrack[awsComponent.VPC][currentRegion][VPC['VpcId']] = {'DISPLAY_ID': VPC['VpcId'] + formatDispName(tagData.nameTag, VPC['CidrBlock'])}
+      if VPCThereIsDefault:
+        VPCDefaultByRegion.append(currentRegion)
+      else:
+        VPCNoDefaultByRegion.append(currentRegion)
+    except EndpointConnectionError:
+      print('\tComponent "{0}" - cannot connect to region {1}'.format(awsComponent.VPC.compName, currentRegion))
+      if aws_cleanupArg.ignore_conn_err:
+        pass
+      else:
+        exit(100)
 
   #################################################################
   #  RouteTables
   #################################################################
   if aws_cleanupArg.inv or awsComponent.RouteTables.compDelete:
-    for RouteTables in clientEC2Region.describe_route_tables()['RouteTables']:
-      tagData = tagScan(RouteTables.get('Tags'), aws_cleanupArg)
-      RouteTablesAssociations = chkRouteTablesAssociations(RouteTables['RouteTableId'], aws_cleanupArg, currentRegion)
-      if RouteTablesAssociations['Main']:
-        RouteTablesDispMain = "Yes"
+    try:
+      for RouteTables in clientEC2Region.describe_route_tables()['RouteTables']:
+        tagData = tagScan(RouteTables.get('Tags'), aws_cleanupArg)
+        RouteTablesAssociations = chkRouteTablesAssociations(RouteTables['RouteTableId'], aws_cleanupArg, currentRegion)
+        if RouteTablesAssociations['Main']:
+          RouteTablesDispMain = "Yes"
+        else:
+          RouteTablesDispMain = "No"
+        isVPCDefault = False
+        for chkVpc in clientEC2Region.describe_vpcs(VpcIds=[RouteTables['VpcId']], Filters=[{'Name': 'isDefault', 'Values':['true']}])['Vpcs']:
+          isVPCDefault = True
+        if aws_cleanupArg.vpc_rebuild or not isVPCDefault:
+          rptCommonLine = (True, currentRegion, RouteTables['RouteTableId'], RouteTables['VpcId'] + (" (default)" if isVPCDefault else ""), RouteTablesDispMain, tagData.nameTag,tagData.keepTagFound)
+          if aws_cleanupArg.inv:
+            RouteTablesRpt.addLine(*rptCommonLine)
+          elif tagData.delThisItem:
+            RouteTablesRpt.addLine(*rptCommonLine)
+            termTrack[awsComponent.RouteTables][currentRegion][RouteTables['RouteTableId']] = {'DISPLAY_ID': RouteTables['RouteTableId'] + formatDispName(tagData.nameTag),'VpcId':RouteTables['VpcId']}
+    except EndpointConnectionError:
+      print('\tComponent "{0}" - cannot connect to region {1}'.format(awsComponent.RouteTables.compName, currentRegion))
+      if aws_cleanupArg.ignore_conn_err:
+        pass
       else:
-        RouteTablesDispMain = "No"
-      isVPCDefault = False
-      for chkVpc in clientEC2Region.describe_vpcs(VpcIds=[RouteTables['VpcId']], Filters=[{'Name': 'isDefault', 'Values':['true']}])['Vpcs']:
-        isVPCDefault = True
-      if aws_cleanupArg.vpc_rebuild or not isVPCDefault:
-        rptCommonLine = (currentRegion, RouteTables['RouteTableId'], RouteTables['VpcId'] + (" (default)" if isVPCDefault else ""), RouteTablesDispMain, tagData.nameTag,tagData.keepTagFound)
-        if aws_cleanupArg.inv:
-          RouteTablesRpt.addLine(RouteTablesRpt.regionBreak(currentRegion), *rptCommonLine)
-        elif tagData.delThisItem:
-          RouteTablesRpt.addLine(RouteTablesRpt.regionBreak(currentRegion), *rptCommonLine)
-          termTrack[awsComponent.RouteTables][currentRegion][RouteTables['RouteTableId']] = {'DISPLAY_ID': RouteTables['RouteTableId'] + formatDispName(tagData.nameTag),'VpcId':RouteTables['VpcId']}
+        exit(100)
 
   #################################################################
   #  Subnets
   #################################################################
   if aws_cleanupArg.inv or awsComponent.Subnets.compDelete:
-    for Subnets in clientEC2Region.describe_subnets()['Subnets']:
-      isVPCDefault = False
-      for chkVpc in clientEC2Region.describe_vpcs(VpcIds=[Subnets['VpcId']], Filters=[{'Name': 'isDefault', 'Values':['true']}])['Vpcs']:
-        isVPCDefault = True
-      if aws_cleanupArg.vpc_rebuild or not isVPCDefault:
-        tagData = tagScan(Subnets.get('Tags'), aws_cleanupArg)
-        rptCommonLine = (currentRegion, Subnets['CidrBlock'], Subnets['SubnetId'], Subnets['VpcId']  + (" (default)" if isVPCDefault else ""), tagData.nameTag,tagData.keepTagFound,Subnets['State'])
-        if aws_cleanupArg.inv:
-          SubnetsRpt.addLine(SubnetsRpt.regionBreak(currentRegion), *rptCommonLine)
-        elif tagData.delThisItem:
-          SubnetsRpt.addLine(SubnetsRpt.regionBreak(currentRegion), *rptCommonLine)
-          termTrack[awsComponent.Subnets][currentRegion][Subnets['SubnetId']] = {'DISPLAY_ID': Subnets['SubnetId'] + formatDispName(tagData.nameTag, Subnets['CidrBlock']), 'VpcId': Subnets['VpcId']}
+    try:
+      for Subnets in clientEC2Region.describe_subnets()['Subnets']:
+        isVPCDefault = False
+        for chkVpc in clientEC2Region.describe_vpcs(VpcIds=[Subnets['VpcId']], Filters=[{'Name': 'isDefault', 'Values':['true']}])['Vpcs']:
+          isVPCDefault = True
+        if aws_cleanupArg.vpc_rebuild or not isVPCDefault:
+          tagData = tagScan(Subnets.get('Tags'), aws_cleanupArg)
+          rptCommonLine = (True, currentRegion, Subnets['CidrBlock'], Subnets['SubnetId'], Subnets['VpcId']  + (" (default)" if isVPCDefault else ""), tagData.nameTag,tagData.keepTagFound,Subnets['State'])
+          if aws_cleanupArg.inv:
+            SubnetsRpt.addLine(*rptCommonLine)
+          elif tagData.delThisItem:
+            SubnetsRpt.addLine(*rptCommonLine)
+            termTrack[awsComponent.Subnets][currentRegion][Subnets['SubnetId']] = {'DISPLAY_ID': Subnets['SubnetId'] + formatDispName(tagData.nameTag, Subnets['CidrBlock']), 'VpcId': Subnets['VpcId']}
+    except EndpointConnectionError:
+      print('\tComponent "{0}" - cannot connect to region {1}'.format(awsComponent.Subnets.compName, currentRegion))
+      if aws_cleanupArg.ignore_conn_err:
+        pass
+      else:
+        exit(100)
 
   #################################################################
   #  InternetGateways
   #################################################################
   if aws_cleanupArg.inv or awsComponent.InternetGateways.compDelete:
-    for InternetGateways  in clientEC2Region.describe_internet_gateways()['InternetGateways']:
-      if InternetGateways['Attachments']:
-        InternetGatewaysDispVpcId = InternetGateways['Attachments'][0]['VpcId']
-        InternetGatewaysDispState = InternetGateways['Attachments'][0]['State']
+    try:
+      for InternetGateways  in clientEC2Region.describe_internet_gateways()['InternetGateways']:
+        if InternetGateways['Attachments']:
+          InternetGatewaysDispVpcId = InternetGateways['Attachments'][0]['VpcId']
+          InternetGatewaysDispState = InternetGateways['Attachments'][0]['State']
+        else:
+          InternetGatewaysDispVpcId = ''
+          InternetGatewaysDispState = ''
+        isVPCDefault = False
+        for chkVpc in clientEC2Region.describe_vpcs(VpcIds=[InternetGatewaysDispVpcId], Filters=[{'Name': 'isDefault', 'Values':['true']}])['Vpcs']:
+          isVPCDefault = True
+        if aws_cleanupArg.vpc_rebuild or not isVPCDefault:
+          tagData = tagScan(InternetGateways.get('Tags'), aws_cleanupArg)
+          rptCommonLine = (True, currentRegion, InternetGateways['InternetGatewayId'], InternetGatewaysDispVpcId + (" (default)" if isVPCDefault else ""), InternetGatewaysDispState, tagData.nameTag,tagData.keepTagFound)
+          if aws_cleanupArg.inv:
+            InternetGatewaysRpt.addLine(*rptCommonLine)
+          elif tagData.delThisItem:
+            InternetGatewaysRpt.addLine(*rptCommonLine)
+            termTrack[awsComponent.InternetGateways][currentRegion][InternetGateways['InternetGatewayId']] = {'DISPLAY_ID': InternetGateways['InternetGatewayId'] + formatDispName(tagData.nameTag),'VpcID':InternetGatewaysDispVpcId}
+    except EndpointConnectionError:
+      print('\tComponent "{0}" - cannot connect to region {1}'.format(awsComponent.InternetGateways.compName, currentRegion))
+      if aws_cleanupArg.ignore_conn_err:
+        pass
       else:
-        InternetGatewaysDispVpcId = ''
-        InternetGatewaysDispState = ''
-      isVPCDefault = False
-      for chkVpc in clientEC2Region.describe_vpcs(VpcIds=[InternetGatewaysDispVpcId], Filters=[{'Name': 'isDefault', 'Values':['true']}])['Vpcs']:
-        isVPCDefault = True
-      if aws_cleanupArg.vpc_rebuild or not isVPCDefault:
-        tagData = tagScan(InternetGateways.get('Tags'), aws_cleanupArg)
-        rptCommonLine = (currentRegion, InternetGateways['InternetGatewayId'], InternetGatewaysDispVpcId + (" (default)" if isVPCDefault else ""), InternetGatewaysDispState, tagData.nameTag,tagData.keepTagFound)
-        if aws_cleanupArg.inv:
-          InternetGatewaysRpt.addLine(InternetGatewaysRpt.regionBreak(currentRegion), *rptCommonLine)
-        elif tagData.delThisItem:
-          InternetGatewaysRpt.addLine(InternetGatewaysRpt.regionBreak(currentRegion), *rptCommonLine)
-          termTrack[awsComponent.InternetGateways][currentRegion][InternetGateways['InternetGatewayId']] = {'DISPLAY_ID': InternetGateways['InternetGatewayId'] + formatDispName(tagData.nameTag),'VpcID':InternetGatewaysDispVpcId}
+        exit(100)
 
   #################################################################
   #  VPCEndpoints
   #################################################################
   if aws_cleanupArg.inv or awsComponent.VPCEndpoints.compDelete:
-    for VPCEndpoints in clientEC2Region.describe_vpc_endpoints()['VpcEndpoints']:
-      isVPCDefault = False
-      for chkVpc in clientEC2Region.describe_vpcs(VpcIds=[VPCEndpoints['VpcId']], Filters=[{'Name': 'isDefault', 'Values':['true']}])['Vpcs']:
-        isVPCDefault = True
-      chkItemKeep = reScanItemsKeep(VPCEndpoints['VpcEndpointId'], awsComponent.VPCEndpoints)
-      rptCommonLine = (currentRegion, VPCEndpoints['VpcEndpointId'], VPCEndpoints['VpcEndpointType'], VPCEndpoints['VpcId']  + (" (default)" if isVPCDefault else ""),VPCEndpoints['ServiceName'], chkItemKeep)
+    try:
+      for VPCEndpoints in clientEC2Region.describe_vpc_endpoints()['VpcEndpoints']:
+        isVPCDefault = False
+        for chkVpc in clientEC2Region.describe_vpcs(VpcIds=[VPCEndpoints['VpcId']], Filters=[{'Name': 'isDefault', 'Values':['true']}])['Vpcs']:
+          isVPCDefault = True
+        chkItemKeep = reScanItemsKeep(VPCEndpoints['VpcEndpointId'], awsComponent.VPCEndpoints)
+        rptCommonLine = (True, currentRegion, VPCEndpoints['VpcEndpointId'], VPCEndpoints['VpcEndpointType'], VPCEndpoints['VpcId']  + (" (default)" if isVPCDefault else ""),VPCEndpoints['ServiceName'], chkItemKeep)
 
-      if aws_cleanupArg.inv:
-        VPCEndpointsRpt.addLine(VPCEndpointsRpt.regionBreak(currentRegion), *rptCommonLine)
-      elif not chkItemKeep: 
-        VPCEndpointsRpt.addLine(VPCEndpointsRpt.regionBreak(currentRegion), *rptCommonLine)
-        termTrack[awsComponent.VPCEndpoints][currentRegion][VPCEndpoints['VpcEndpointId']] = {'DISPLAY_ID': VPCEndpoints['VpcEndpointId'] + formatDispName(VPCEndpoints['VpcEndpointType'],VPCEndpoints['ServiceName'])}
-
+        if aws_cleanupArg.inv:
+          VPCEndpointsRpt.addLine(*rptCommonLine)
+        elif not chkItemKeep: 
+          VPCEndpointsRpt.addLine(*rptCommonLine)
+          termTrack[awsComponent.VPCEndpoints][currentRegion][VPCEndpoints['VpcEndpointId']] = {'DISPLAY_ID': VPCEndpoints['VpcEndpointId'] + formatDispName(VPCEndpoints['VpcEndpointType'],VPCEndpoints['ServiceName'])}
+    except EndpointConnectionError:
+      print('\tComponent "{0}" - cannot connect to region {1}'.format(awsComponent.VPCEndpoints.compName, currentRegion))
+      if aws_cleanupArg.ignore_conn_err:
+        pass
+      else:
+        exit(100)
 
 output += EC2Rpt.resultf()
 output += SecurityGroupsRpt.resultf()
@@ -658,7 +822,9 @@ output += MetricAlarmsRpt.resultf()
 output += CloudWatchLogGroupsRpt.resultf()
 output += ConfigRulesRpt.resultf()
 output += ConfigurationRecordersRpt.resultf()
+output += CloudFormationStacksRpt.resultf()
 output += CloudTrailRpt.resultf()
+output += AssessmentTargetsRpt.resultf()
 output += SNSTopicsRpt.resultf()
 
 #################################################################
@@ -703,7 +869,7 @@ output += UsersRpt.resultf()
 #################################################################
 #  Groups 
 #################################################################
-GroupsRpt = awsRpt("{0}:".format(awsComponent.Groups.compName),*[["Group Name", 40], ["Keep"]])
+GroupsRpt = awsRpt("{0}:".format(awsComponent.Groups.compName),*[["Group Name", 60], ["Keep"]])
 if aws_cleanupArg.inv or awsComponent.Groups.compDelete:
   for Groups in clientIAM.list_groups()['Groups']:
     chkItemKeep = reScanItemsKeep(Groups['GroupName'], awsComponent.Groups)
@@ -936,6 +1102,18 @@ if not aws_cleanupArg.inv:
             print("    ERROR:", e, '\n')
 
       #################################################################
+      #  CloudFormationStacks delete 
+      #################################################################
+      for currentRegion,idDict in termTrack.get(awsComponent.CloudFormationStacks, {}).items():
+        clientCloudFormationRegion = boto3.client('cloudformation', region_name=currentRegion)
+        for id, idDetail in idDict.items():
+          print('Deleting {0} {1} "{2}"'.format(currentRegion, awsComponent.CloudFormationStacks.compName, idDetail['DISPLAY_ID']))
+          try:
+            ign = clientCloudFormationRegion.delete_stack(StackName=id)
+          except ClientError as e:
+            print("    ERROR:", e, '\n')
+
+      #################################################################
       #  CloudTrail delete
       #################################################################
       for currentRegion,idDict in termTrack.get(awsComponent.CloudTrail, {}).items():
@@ -956,6 +1134,18 @@ if not aws_cleanupArg.inv:
           print('Deleting {0} {1} "{2}"'.format(currentRegion, awsComponent.ConfigurationRecorders.compName, id))
           try:
             response = clientConfigRegion.delete_configuration_recorder(ConfigurationRecorderName=id)
+          except ClientError as e:
+            print("    ERROR:", e, '\n')
+
+      #################################################################
+      #  AssessmentTargets delete 
+      #################################################################
+      for currentRegion,idDict in termTrack.get(awsComponent.AssessmentTargets, {}).items():
+        clientInspectorRegion = boto3.client('inspector', region_name=currentRegion)
+        for id, idDetail in idDict.items():
+          print('Deleting {0} Assessment Target {1}'.format(currentRegion, idDetail['DISPLAY_ID']))
+          try:
+            response = clientInspectorRegion.delete_assessment_target(assessmentTargetArn=id)
           except ClientError as e:
             print("    ERROR:", e, '\n')
 
@@ -996,7 +1186,7 @@ if not aws_cleanupArg.inv:
             for instChk in instResvChk['Instances']:
               conflictList.append(instChk['InstanceId'] + tagNameFind(instChk.get('Tags'), aws_cleanupArg))
           if conflictList:
-            print('  WARNING: {0} subnet {1} is associated with the following EC2 instance(s):\n\t{3}'.format(currentRegion, id, '\n\t'.join(conflictList)))
+            print('  WARNING: {0} subnet {1} is associated with the following EC2 instance(s):\n\t{2}'.format(currentRegion, id, '\n\t'.join(conflictList)))
 
           conflictList = []
           for idChk in clientEC2Region.describe_vpc_endpoints(Filters=[{'Name': 'vpc-id', 'Values': [idDetail['VpcId']]}])['VpcEndpoints']:
@@ -1016,7 +1206,7 @@ if not aws_cleanupArg.inv:
       for currentRegion, idDict in termTrack.get(awsComponent.RouteTables, {}).items():
         clientEC2Region = boto3.client('ec2',region_name=currentRegion)
         for id, idDetail in idDict.items():
-          print('Deleting {0} route Table {1}'.format(currentRegion, idDetail['DISPLAY_ID']))
+          print('Deleting {0} Route Table {1}'.format(currentRegion, idDetail['DISPLAY_ID']))
           delRouteTables = True
           #  Check main
           RouteTablesAssociations = chkRouteTablesAssociations(id, aws_cleanupArg, currentRegion)
@@ -1029,7 +1219,7 @@ if not aws_cleanupArg.inv:
               print('  WARNING: {0} {1} is the Main route table for VPC {2}; it cannot be deleted until the VPC is in-scope for deletion.'.format(currentRegion, id, idDetail['VpcId']  + tagNameFind(chkVpc.get('Tags'), aws_cleanupArg)))
           if delRouteTables:
             if RouteTablesAssociations['Subnets'] and not RouteTablesAssociations['Main']:
-              print('  WARNING: {0} route Table {1} is associated with the following subnets:\n\t{3}.'.format(currentRegion, id, '\n\t'.join(RouteTablesAssociations['Subnets'])))
+              print('  WARNING: {0} Route Table {1} is associated with the following subnets:\n\t{2}.'.format(currentRegion, id, '\n\t'.join(RouteTablesAssociations['Subnets'])))
             try:
               ign = clientEC2Region.delete_route_table(RouteTableId=id)
             except ClientError as e:
