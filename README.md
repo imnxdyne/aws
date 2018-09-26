@@ -44,12 +44,12 @@ Both aws_cleanup.py AND aws_cleanup_import.py files need to be in the same direc
 **The file aws_cleanup_import.py contains script control settings that can be modified by the end-user.**
     
 - List of AWS components that aws_cleanup.py script can inventory/delete  
-  **``self.EC2 = componentDef(compName = 'EC2 instances', compDelete = True)``**  
-  **``self.SecGroup = componentDef(compName = 'Security Groups', compDelete = True)``**  
-  **``self.Volume = componentDef(compName = 'Volumes', compDelete = True)``**  
-  **``self.KeyPairs = componentDef(compName = 'Key Pairs', compDelete = True)``**  
-  **``self.User = componentDef(compName = 'User', compDelete = True, itemsKeep=())``**  
-  **``self.Group = componentDef(compName = 'Group', compDelete = True, itemsKeep=())``**  
+  **``self.EC2 = componentDef(compName = 'EC2 instances', compDelete = True )``**  
+  **``self.SecGroup = componentDef(compName = 'Security Groups', compDelete = True )``**  
+  **``self.Volume = componentDef(compName = 'Volumes', compDelete = True )``**  
+  **``self.KeyPairs = componentDef(compName = 'Key Pairs', compDelete = True )``**  
+  **``self.User = componentDef(compName = 'User', compDelete = True, itemsKeep=() )``**  
+  **``self.Group = componentDef(compName = 'Group', compDelete = True, itemsKeep=() )``**  
   **``...``**
   
   
