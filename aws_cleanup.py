@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #  aws_cleanup.py 
-#  2018.06.12 - Created - William Waye 
+#  2018.06.12 - William Waye 
 #  2018.06.24 - ww - consolidated code via ternary operators & added AWS Volume
 #  2018.06.29 - ww - improved UI, added S3 bucket, removed blacklist (using "keep" tag instead).
 #  2018.07.01 - ww - added POC code for warning about EC2 instances with dependency on
@@ -8,7 +8,7 @@
 #  2018.07.09 - ww - added a couple traps for handling (potential) common errors for AWS connections.
 #  2018.07.10 - ww - Changed delete verification from entering "yes" to a 4-digit delete
 #     verification code, added termTrackClass (primarily for having variable constants instead of
-#     string constants for dictionary indexes), and added "--test_region" argument (reduced number of regions
+#     string constants for dictionary indexes), and added "--region_test" argument (reduced number of regions
 #     during dev testing for improved performance). Changed region break format.
 #  2018.07.17 - ww - Added VPC, subnets, internet gateways, route tables. Added a couple
 #     dependency warnings.
@@ -25,7 +25,8 @@
 #                    option for deleting by specific tag - too many components with non-tags.
 #  2018.09.25 - ww - Added CloudFormation Stacks, updated code for report breaks. Added "--ignore_conn_err"
 #                    parameter to allow script to continue running in case of region connectivity issues.
-#                    Without "--ignore_conn_err", script will crash during connection errors.
+#                    Without "--ignore_conn_err", script will crash during connection errors. Moved
+#                    subset of test regions constant to aws_cleanup.py.
 import sys
 import os
 import re
@@ -43,7 +44,7 @@ import textwrap
 from botocore.exceptions import ClientError,NoCredentialsError,EndpointConnectionError
 from collections import deque,defaultdict,namedtuple    # used for initializing nested dictionaries
 try:
-  from aws_cleanup_import import constantKeepTag, componentDef, awsComponentClass, aws_cleanup_import_ver
+  from aws_cleanup_import import constantKeepTag, regionTestSubset, componentDef, awsComponentClass, aws_cleanup_import_ver
 except ImportError:
   print('ERROR: aws_cleanup_import.py is missing. This file is required')
   exit(1)
@@ -52,7 +53,7 @@ def signal_handler(sig, frame):
         sys.exit(0)
 signal.signal(signal.SIGINT, signal_handler)
 
-aws_cleanup_main_ver = 2.8
+aws_cleanup_main_ver = 2.10
 if aws_cleanup_import_ver != aws_cleanup_main_ver:
   print('WARNING: incorrect version of aws_cleanup_import.py file (version number is {0}; expected {1}).'.format(aws_cleanup_import_ver, aws_cleanup_main_ver))
   ign = input('Press enter to continue: ')
@@ -303,7 +304,7 @@ parser = argparse.ArgumentParser(allow_abbrev=False,usage=argUsage)
 #  As "del" is a reserved word in Python, needed to have an alnternate destination.
 parser.add_argument('-d', '--del', dest='delete', help='delete/terminate AWS components', action="store_true", default=False)
 parser.add_argument('--vpc_rebuild', help='rebuild VPC default environment for all regions', action="store_true", default=False)
-parser.add_argument('--test_region', help='reduces number of in-scope regions for code testing for better performance -ww', action="store_true", default=False)
+parser.add_argument('--region_test', help='reduces number of in-scope regions for code testing for better performance -ww', action="store_true", default=False)
 parser.add_argument('--ignore_conn_err', help='during inventory, script will ignore connectivity errors to AWS regions', action="store_true", default=False)
 args = parser.parse_args()
 if args.delete:
@@ -363,8 +364,8 @@ except:
     print('It looks like the .aws directory for credentials is missing.')
   print('Make sure the local credentials are setup correctly - instructions can be found at https://aws.amazon.com/developers/getting-started/python')
   exit(12)
-if args.test_region:
-  regions=['us-west-1','us-west-2','us-east-1','us-east-2']  #for testing#
+if args.region_test:
+  regions=regionTestSubset  #for testing#
   print('Reduced regions for script testing: ', regions, '\n\n')
 
 resourceIAM = boto3.resource('iam')

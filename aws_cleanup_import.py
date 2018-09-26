@@ -3,10 +3,13 @@
 from collections import deque,defaultdict,namedtuple  
 
 #  aws_cleanup_import_ver needs to match version number in aws_cleanup.py
-aws_cleanup_import_ver = 2.8
+aws_cleanup_import_ver = 2.10
 
 #  Can enabled multiple "keep" tags.
 constantKeepTag = ['keep']
+
+#  Subset of regions for script testing via "--region_test"  (shortens execution time)
+regionTestSubset=['us-west-1','us-west-2','us-east-1','us-east-2']
 
 componentDef = namedtuple("componentDef", ['compName', 'compDelete', 'itemsKeep'])
 componentDef.__new__.__defaults__ = (None, None, ())
