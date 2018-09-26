@@ -25,7 +25,7 @@
 
 ## Running aws_cleanup.py
 Both aws_cleanup.py AND aws_cleanup_import.py files need to be in the same directory
-- **INVENTORY ONLY OF AWS COMPONENTS:**
+- **INVENTORY OF AWS COMPONENTS:**
   - **``# python3 aws_cleanup.py``**  
     Run without parameters, aws_cleanup.py displays an inventory of AWS components for all regions. 
     - Column "keep(Tag)" shows which AWS items have the tag key "keep". These AWS items are blocked from deletion when *aws_cleanup.py --del* is run.
