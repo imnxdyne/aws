@@ -7,7 +7,7 @@
   - The script is built around AWS services utilized in the SANS class SEC545 "Cloud Security Architecture and Operations"
 
 
-**Current AWS services/components in-scope for aws_cleanup.py. Please contact me for any additional components to include:**
+**Current AWS services/components in-scope for aws_cleanup.py. Please contact me for any additional services to include:**
 - EC2 instances 
 - Security Groups 
 - Volumes 
