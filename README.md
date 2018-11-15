@@ -1,4 +1,9 @@
 # aws_cleanup.py
+**aws_cleanup.py script goal:**
+- one
+- two
+- three
+
 **Current AWS components in-scope for aws_cleanup.py:**
 - EC2 instances 
 - Security Groups 
