@@ -1,10 +1,13 @@
 # aws_cleanup.py
-**aws_cleanup.py script goal:**
-  This script
-- two
-- three
+**Description:**  
+  The goals for aws_cleanup.py are:
+  - Running with default parameters, the script will display an inventory of current AWS components setup in your environment
+  - If run with the optional "--del" parameter, the script will display an invitory of AWS components that are in-scope for deletion. After the inventory is displayed, there is a verification step prior to deleting.
+  - Though a configuration file, AWS components or AWS components itenms can be blocked from deletion (useful for retaining key pairs from removal, keeping select EC2 instances, ...). 
+  - The script is built around AWS services utilized in the SANS class SEC545 "Cloud Security Architecture and Operations"
 
-**Current AWS components in-scope for aws_cleanup.py:**
+
+**Current AWS services/components in-scope for aws_cleanup.py. Please contact me for any additional components to include:**
 - EC2 instances 
 - Security Groups 
 - Volumes 
