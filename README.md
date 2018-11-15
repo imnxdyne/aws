@@ -1,6 +1,6 @@
 # aws_cleanup.py
 **aws_cleanup.py script goal:**
-- one
+  This script
 - two
 - three
 
