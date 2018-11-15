@@ -25,6 +25,11 @@
 
 ## Running aws_cleanup.py
 Both aws_cleanup.py AND aws_cleanup_import.py files need to be in the same directory
+- **REQUIREMENTS**
+  - Both aws_cleanup.py AND aws_cleanup_import.py files need to be in the same directory
+  - aws_cleanup.py is written for Python v3.5 or greater
+  - boto3 nees to be installed and configured (pip install boto3)
+
 - **INVENTORY OF AWS COMPONENTS:**
   - **``# python3 aws_cleanup.py``**  
     Run without parameters, aws_cleanup.py displays an inventory of AWS components for all regions. 
